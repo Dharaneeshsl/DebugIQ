@@ -50,6 +50,7 @@ frontend/build/
 data/*.csv
 data/*.parquet
 data/*.json
+backend/data/
 
 # Reports
 reports/
@@ -61,3 +62,4 @@ config.local.json
 # SQLite
 *.sqlite
 *.sqlite3
+*.db
