@@ -19,7 +19,7 @@ DB_PATH = BASE_DIR / "data" / "debugiq.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(bind=engine)
+SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 Base = declarative_base()
 
 

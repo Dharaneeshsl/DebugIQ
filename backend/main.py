@@ -138,12 +138,13 @@ def upload_log(file: UploadFile = File(...)):
     session = SessionLocal()
     try:
         run = create_run(session, file.filename, total, unique, critical, health)
-        add_failures(session, run.id, failures)
+        run_id = run.id
+        add_failures(session, run_id, failures)
     finally:
         session.close()
 
     return {
-        "run_id": run.id,
+        "run_id": run_id,
         "total_failures": total,
         "unique_failures": unique,
         "critical_count": critical,
