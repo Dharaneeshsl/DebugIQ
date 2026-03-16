@@ -9,7 +9,7 @@ const COLORS = {
 };
 
 const CategoryDistribution = ({ data }) => (
-  <div className="bg-card border border-slate-700/40 rounded-xl p-4">
+  <div className="glass rounded-xl p-4 card-glow">
     <h3 className="text-sm text-slate-300 mb-2">Failure Category Distribution</h3>
     <div className="h-56">
       <ResponsiveContainer width="100%" height="100%">

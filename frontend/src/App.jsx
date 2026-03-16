@@ -1,5 +1,4 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Home from "./Home";
 import LogUpload from "./components/LogUpload";
 import Dashboard from "./components/Dashboard";
 
@@ -11,7 +10,7 @@ const App = () => (
     }}
   >
     <Routes>
-      <Route path="/" element={<Home />} />
+      <Route path="/" element={<Dashboard />} />
       <Route path="/upload" element={<LogUpload />} />
       <Route path="/dashboard/:runId" element={<Dashboard />} />
     </Routes>

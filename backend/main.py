@@ -30,7 +30,7 @@ app = FastAPI(title="DebugIQ API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -149,6 +149,18 @@ def upload_log(file: UploadFile = File(...)):
         "unique_failures": unique,
         "critical_count": critical,
         "health_score": health,
+    }
+
+
+@app.post("/debug-upload")
+async def debug_upload(file: UploadFile = File(...)):
+    content = await file.read()
+    text = content.decode("utf-8", errors="ignore")
+    lines = text.splitlines()
+    return {
+        "total_lines": len(lines),
+        "first_10_lines": lines[:10],
+        "file_size_bytes": len(content),
     }
 
 

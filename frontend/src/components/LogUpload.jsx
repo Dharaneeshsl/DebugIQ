@@ -27,16 +27,22 @@ const LogUpload = () => {
   }, []);
 
   return (
-    <div className="min-h-screen bg-base text-white flex items-center justify-center px-6">
-      <div className="w-full max-w-xl bg-panel border border-slate-700/40 rounded-2xl p-8">
-        <h1 className="text-2xl font-semibold mb-2">DebugIQ Log Upload</h1>
-        <p className="text-slate-400 mb-6">Upload .log, .txt or .gz regression logs</p>
+    <div className="min-h-screen flex items-center justify-center px-6">
+      <div className="w-full max-w-2xl glass rounded-2xl p-10 card-glow">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <div className="text-xs text-emerald-400 uppercase tracking-[0.2em] mono">DebugIQ</div>
+            <h1 className="text-2xl font-semibold">Upload Regression Log</h1>
+            <p className="text-slate-400 text-sm mt-1">Drop .log, .txt or .gz to generate a dashboard</p>
+          </div>
+          <div className="text-xs text-slate-500">Pipeline v2</div>
+        </div>
 
         <div
           onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
-          className={`border-2 border-dashed rounded-xl p-8 text-center transition ${dragging ? "border-emerald-400 bg-emerald-400/10" : "border-slate-600"}`}
+          className={`border-2 border-dashed rounded-xl p-10 text-center transition ${dragging ? "border-emerald-400 bg-emerald-400/10" : "border-slate-600"}`}
         >
           <input
             type="file"
@@ -52,11 +58,11 @@ const LogUpload = () => {
         </div>
 
         {progress > 0 && (
-          <div className="mt-4">
-            <div className="h-2 bg-slate-700 rounded">
+          <div className="mt-6">
+            <div className="h-2 bg-slate-800 rounded">
               <div className="h-2 bg-emerald-500 rounded" style={{ width: `${progress}%` }} />
             </div>
-            <div className="text-xs text-slate-400 mt-1">{progress}%</div>
+            <div className="text-xs text-slate-400 mt-2">{progress}%</div>
           </div>
         )}
 
