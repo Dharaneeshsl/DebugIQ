@@ -46,4 +46,5 @@ def generate_sample_log(path: Path, lines: int = 500) -> None:
 
 
 if __name__ == "__main__":
-    generate_sample_log(Path("sample_logs") / "test.log")
+    base_dir = Path(__file__).resolve().parent
+    generate_sample_log(base_dir / "sample_logs" / "test.log")
