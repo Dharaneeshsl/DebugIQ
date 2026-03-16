@@ -30,7 +30,7 @@ app = FastAPI(title="DebugIQ API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,6 +91,11 @@ def _to_dataframe(failures: List[Dict]) -> pd.DataFrame:
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.post("/upload")
@@ -221,8 +226,11 @@ def get_dashboard(run_id: int):
 
     model = _get_model()
     embeddings = model.encode(df["message"].tolist(), normalize_embeddings=True)
-    pca = PCA(n_components=2)
-    coords = pca.fit_transform(embeddings)
+    if len(df) >= 2:
+        pca = PCA(n_components=2)
+        coords = pca.fit_transform(embeddings)
+    else:
+        coords = [[0.0, 0.0]]
     cluster_points = []
     for idx, row in df.iterrows():
         cluster_points.append(
