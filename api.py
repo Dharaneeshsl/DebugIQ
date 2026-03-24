@@ -1,43 +1,50 @@
-from flask import Flask, jsonify, send_from_directory
-from flask_cors import CORS
-import os
-import pandas as pd
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pathlib import Path
-from database import read_failures
-from analysis import summarize_for_report, compute_regression_health, compute_module_hotspots
 
-app = Flask(__name__)
-CORS(app)
+from database import read_failures
+from analysis import summarize_for_report
+
+app = FastAPI(title="DebugIQ API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 DATA_DIR = Path("data")
 
-@app.route("/api/failures", methods=["GET"])
+
+@app.get("/api/failures")
 def get_failures():
     df = read_failures()
     if df.empty:
-        return jsonify([])
-    return jsonify(df.to_dict(orient="records"))
+        return []
+    return df.to_dict(orient="records")
 
-@app.route("/api/summary", methods=["GET"])
+
+@app.get("/api/summary")
 def get_summary():
     df = read_failures()
     if df.empty:
-        return jsonify({
+        return {
             "total_failures": 0,
             "unique_failures": 0,
             "regression_health_score": 100,
-            "problematic_modules": []
-        })
-    summary = summarize_for_report(df)
-    return jsonify(summary)
+            "problematic_modules": [],
+        }
+    return summarize_for_report(df)
 
-@app.route("/api/report/<filename>", methods=["GET"])
-def get_report(filename):
-    if filename not in ["debug_report.txt", "debug_report.md"]:
-        return "File not found", 404
-    return send_from_directory(DATA_DIR, filename)
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(host="0.0.0.0", port=port, debug=debug)
+@app.get("/api/report/{filename}")
+def get_report(filename: str):
+    if filename not in ("debug_report.txt", "debug_report.md"):
+        raise HTTPException(status_code=404, detail="File not found")
+    file_path = DATA_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path)

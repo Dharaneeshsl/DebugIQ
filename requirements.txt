@@ -6,6 +6,5 @@ streamlit
 plotly
 regex
 torch
-flask
-flask-cors
-gunicorn
+fastapi
+uvicorn

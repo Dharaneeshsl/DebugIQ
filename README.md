@@ -79,7 +79,6 @@ Ensure you have Python and Node.js installed.
 ```bash
 # Python dependencies
 pip install -r requirements.txt
-pip install flask flask-cors
 
 # Frontend dependencies
 cd frontend
@@ -97,7 +96,7 @@ You need to run both the API and the Frontend:
 
 **Terminal 1 (Backend API):**
 ```bash
-python api.py
+uvicorn api:app --host 0.0.0.0 --port 5000
 ```
 
 **Terminal 2 (React Frontend):**
