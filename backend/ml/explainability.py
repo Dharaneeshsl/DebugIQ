@@ -100,7 +100,7 @@ Return:
 """.strip()
 
     # 1) Gemini (primary, if configured)
-    gemini_key = os.environ.get("GEMINI_API_KEY", "AIzaSyAx-gkB9N1y-u1qjFaelUwQrPOsi3OZlnQ")
+    gemini_key = os.environ.get("GEMINI_API_KEY")
     if gemini_key and genai is not None:
         try:
             genai.configure(api_key=gemini_key)

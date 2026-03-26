@@ -1,18 +1,17 @@
-FROM python:3.11
+FROM python:3.11-slim
 
 WORKDIR /app
 
 # Install Python dependencies
-COPY requirements.txt ./
+COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app
-COPY . .
+COPY backend ./
 
 ENV PYTHONUNBUFFERED=1
-ENV PORT=5000
+ENV PORT=8000
 
-EXPOSE 5000
+EXPOSE 8000
 
-# Use gunicorn for production
-CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

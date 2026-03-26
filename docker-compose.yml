@@ -7,21 +7,25 @@ services:
       - "8000:8000"
     depends_on:
       - rabbitmq
+      - mongo
     env_file:
       - path: ./backend/.env
         required: false
     environment:
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - MONGO_URI=mongodb://mongo:27017
 
   worker:
     build: ./backend
     depends_on:
       - rabbitmq
+      - mongo
     env_file:
       - path: ./backend/.env
         required: false
     environment:
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - MONGO_URI=mongodb://mongo:27017
     command: ["python", "worker.py"]
   
   frontend:
@@ -36,3 +40,13 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:

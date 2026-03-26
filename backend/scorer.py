@@ -41,13 +41,14 @@ def compute_scores(
     unique_ids: List[int],
     history_keys: List[str] | None = None,
     history_counts: Dict[str, int] | None = None,
+    weights: Dict[str, float] | None = None,
 ) -> Tuple[List[float], Dict[int, int]]:
     freq_counter = Counter(unique_ids)
     max_freq = max(freq_counter.values()) if freq_counter else 1
     history_counts = history_counts or {}
     max_hist = max(history_counts.values()) if history_counts else 1
 
-    w = _current_weights
+    w = weights or _current_weights
     scores: List[float] = []
     for idx, (sev, mod, uid) in enumerate(zip(severities, modules, unique_ids)):
         sev_w = SEVERITY_WEIGHTS.get(sev, 0.1)

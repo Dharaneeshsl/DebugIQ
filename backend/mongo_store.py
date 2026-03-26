@@ -52,6 +52,8 @@ def init_mongo() -> None:
     db["runs"].create_index([("user_id", ASCENDING), ("uploaded_at", ASCENDING)])
     db["failures"].create_index([("run_id", ASCENDING)])
     db["upload_jobs"].create_index([("user_id", ASCENDING), ("created_at", ASCENDING)])
+    db["revoked_tokens"].create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
+    db["settings"].create_index([("_id", ASCENDING)], unique=True)
 
 
 # Users
@@ -119,6 +121,8 @@ def add_failures(run_id: int, failures: List[dict]) -> None:
                 "context": f.get("context"),
                 "category": f.get("category"),
                 "cluster_id": f.get("cluster_id"),
+                "cluster_x": f.get("cluster_x"),
+                "cluster_y": f.get("cluster_y"),
                 "priority_score": f.get("priority_score"),
                 "is_duplicate": f.get("is_duplicate"),
                 "unique_failure_id": f.get("unique_failure_id"),
@@ -134,15 +138,25 @@ def get_run(run_id: int, *, user_id: int | None = None) -> Optional[Dict]:
     return _db()["runs"].find_one(q)
 
 
-def get_runs(*, user_id: int | None = None) -> List[Dict]:
+def get_runs(*, user_id: int | None = None, limit: int | None = None, offset: int | None = None) -> List[Dict]:
     q = {}
     if user_id is not None:
         q["user_id"] = user_id
-    return list(_db()["runs"].find(q).sort("uploaded_at", -1))
+    cursor = _db()["runs"].find(q).sort("uploaded_at", -1)
+    if offset:
+        cursor = cursor.skip(int(offset))
+    if limit:
+        cursor = cursor.limit(int(limit))
+    return list(cursor)
 
 
-def get_failures_by_run(run_id: int) -> List[Dict]:
-    return list(_db()["failures"].find({"run_id": run_id}))
+def get_failures_by_run(run_id: int, *, limit: int | None = None, offset: int | None = None) -> List[Dict]:
+    cursor = _db()["failures"].find({"run_id": run_id})
+    if offset:
+        cursor = cursor.skip(int(offset))
+    if limit:
+        cursor = cursor.limit(int(limit))
+    return list(cursor)
 
 
 def delete_run(run_id: int, *, user_id: int | None = None) -> None:
@@ -172,6 +186,19 @@ def get_history_counts(*, user_id: int | None = None) -> dict:
     return counts
 
 
+def get_weights() -> Optional[Dict[str, float]]:
+    doc = _db()["settings"].find_one({"_id": "priority_weights"})
+    return doc.get("weights") if doc else None
+
+
+def set_weights(weights: Dict[str, float]) -> None:
+    _db()["settings"].update_one(
+        {"_id": "priority_weights"},
+        {"$set": {"weights": weights, "updated_at": datetime.utcnow()}},
+        upsert=True,
+    )
+
+
 # Upload jobs
 def create_upload_job(filename: str, raw_logs_text: str, *, user_id: int | None = None) -> Dict:
     job_id = _next_id("upload_jobs")
@@ -184,6 +211,8 @@ def create_upload_job(filename: str, raw_logs_text: str, *, user_id: int | None 
         "error": None,
         "run_id": None,
         "user_id": user_id,
+        "retry_count": 0,
+        "max_retries": 2,
     }
     _db()["upload_jobs"].insert_one(doc)
     return doc
@@ -194,6 +223,15 @@ def get_upload_job(job_id: int, *, user_id: int | None = None) -> Optional[Dict]
     if user_id is not None:
         q["user_id"] = user_id
     return _db()["upload_jobs"].find_one(q)
+
+
+def increment_upload_job_retry(job_id: int) -> int:
+    doc = _db()["upload_jobs"].find_one_and_update(
+        {"_id": job_id},
+        {"$inc": {"retry_count": 1}},
+        return_document=ReturnDocument.AFTER,
+    )
+    return int(doc.get("retry_count", 0)) if doc else 0
 
 
 def set_upload_job_status(
@@ -209,3 +247,19 @@ def set_upload_job_status(
     if run_id is not None:
         update["run_id"] = run_id
     _db()["upload_jobs"].update_one({"_id": job_id}, {"$set": update})
+
+
+def revoke_token(jti: str, exp_ts: int) -> None:
+    expires_at = datetime.utcfromtimestamp(int(exp_ts))
+    _db()["revoked_tokens"].update_one(
+        {"_id": jti},
+        {"$set": {"expires_at": expires_at}},
+        upsert=True,
+    )
+
+
+def is_token_revoked(jti: str) -> bool:
+    if not jti:
+        return False
+    doc = _db()["revoked_tokens"].find_one({"_id": jti})
+    return doc is not None

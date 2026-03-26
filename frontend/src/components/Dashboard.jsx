@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { getDashboard, getFailures, exportCSV, uploadLog, getExplanation } from "../api/api";
+import { getDashboard, getFailures, exportCSV, uploadLog, getExplanation, getRuns, logout } from "../api/api";
 import HealthScore from "./HealthScore";
 import CategoryDistribution from "./CategoryDistribution";
 import FailurePriorityTable from "./FailurePriorityTable";
 import ModuleHotspot from "./ModuleHotspot";
-import FailureClusters from "./FailureClusters";
 import FailureTimeline from "./FailureTimeline";
 import RootCauseSuggestion from "./RootCauseSuggestion";
 import GraphView from "./GraphView";
@@ -23,6 +22,11 @@ const Dashboard = () => {
   const [shapImportance, setShapImportance] = useState(null);
   const [explainLoading, setExplainLoading] = useState(false);
   const [graphMode, setGraphMode] = useState("cluster");
+
+  const [runs, setRuns] = useState([]);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runsOffset, setRunsOffset] = useState(0);
+  const runsLimit = 8;
 
   useEffect(() => {
     if (!runId) {
@@ -66,6 +70,30 @@ const Dashboard = () => {
     };
     fetchAll();
   }, [runId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadRuns = async () => {
+      setRunsLoading(true);
+      try {
+        const res = await getRuns({ limit: runsLimit, offset: runsOffset });
+        if (!cancelled) setRuns(res.data || []);
+      } catch (err) {
+        if (err?.response?.status === 401) {
+          localStorage.removeItem("debugiq_token");
+          navigate("/login");
+          return;
+        }
+        if (!cancelled) setRuns([]);
+      } finally {
+        if (!cancelled) setRunsLoading(false);
+      }
+    };
+    loadRuns();
+    return () => {
+      cancelled = true;
+    };
+  }, [runsOffset]);
 
   useEffect(() => {
     if (!runId || !selected?.id) {
@@ -176,11 +204,75 @@ const Dashboard = () => {
           <Link to="/upload" className="w-full block text-center bg-slate-800 hover:bg-slate-700 text-sm px-3 py-2 rounded">
             Upload New Log
           </Link>
+          <button
+            onClick={async () => {
+              try {
+                await logout();
+              } catch {
+                // Best-effort; still clear token locally.
+              } finally {
+                localStorage.removeItem("debugiq_token");
+                navigate("/login");
+              }
+            }}
+            className="w-full bg-slate-900 hover:bg-slate-800 text-sm px-3 py-2 rounded mt-2 border border-slate-700 text-slate-300"
+          >
+            Logout
+          </button>
         </div>
 
         <div className="glass rounded-xl p-4 text-sm text-slate-300">
           <div className="text-xs text-slate-500 mb-2">Run ID</div>
           <div className="mono text-emerald-300">{runId ? `#${runId}` : "No run loaded"}</div>
+        </div>
+
+        <div className="glass rounded-xl p-4 text-sm text-slate-300">
+          <div className="text-xs text-slate-400 mb-2">Recent Runs</div>
+          {runsLoading && <div className="text-xs text-slate-500">Loading…</div>}
+          {!runsLoading && runs.length === 0 && (
+            <div className="text-xs text-slate-500">No runs yet.</div>
+          )}
+          {!runsLoading && runs.length > 0 && (
+            <div className="space-y-2">
+              {runs.map((r) => (
+                <button
+                  key={r.id}
+                  onClick={() => navigate(`/dashboard/${r.id}`)}
+                  className={`w-full text-left px-2 py-2 rounded border ${
+                    String(runId) === String(r.id)
+                      ? "bg-emerald-500/10 border-emerald-400/20 text-emerald-200"
+                      : "bg-slate-900/30 border-slate-800 hover:bg-slate-900/50 text-slate-300"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="mono text-xs">#{r.id}</span>
+                    <span className="text-[11px] text-slate-500">
+                      {r.total_failures ?? 0} fails
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 truncate">
+                    {r.filename || "upload.log"}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2 mt-3">
+            <button
+              className="flex-1 bg-slate-900 hover:bg-slate-800 text-xs px-3 py-2 rounded border border-slate-800 disabled:opacity-50"
+              disabled={runsOffset === 0 || runsLoading}
+              onClick={() => setRunsOffset((o) => Math.max(0, o - runsLimit))}
+            >
+              Prev
+            </button>
+            <button
+              className="flex-1 bg-slate-900 hover:bg-slate-800 text-xs px-3 py-2 rounded border border-slate-800 disabled:opacity-50"
+              disabled={runs.length < runsLimit || runsLoading}
+              onClick={() => setRunsOffset((o) => o + runsLimit)}
+            >
+              Next
+            </button>
+          </div>
         </div>
 
         <div className="mt-auto text-xs text-slate-500">v2.0 Prototype</div>
