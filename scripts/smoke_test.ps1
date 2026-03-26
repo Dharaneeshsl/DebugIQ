@@ -2,7 +2,7 @@ param(
   [string]$BaseUrl = "http://localhost:8000",
   [string]$Username = "admin",
   [string]$Password = "admin123",
-  [string]$LogPath = "$PSScriptRoot\..\sample_logs\test.log"
+  [string]$LogPath = "$PSScriptRoot\..\backend\sample_logs\test.log"
 )
 
 $ErrorActionPreference = "Stop"

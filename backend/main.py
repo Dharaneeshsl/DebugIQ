@@ -21,7 +21,7 @@ from deduplicator import deduplicate
 from clusterer import cluster_embeddings
 from scorer import compute_scores, optimize_weights, prioritize_failures
 from services.pipeline import process_log_text
-from database import verify_password, hash_password
+from auth_utils import verify_password, hash_password
 from mongo_store import (
     init_mongo,
     create_run,
@@ -37,6 +37,10 @@ from mongo_store import (
     get_user_by_username,
     create_user,
     admin_exists,
+    get_weights,
+    set_weights,
+    revoke_token,
+    is_token_revoked,
 )
 
 app = FastAPI(title="DebugIQ API")
@@ -61,6 +65,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from prometheus_fastapi_instrumentator import Instrumentator
 import time
+import uuid
 import jwt
 import os
 import pika
@@ -84,7 +89,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 def create_access_token(data: dict):
     to_encode = data.copy()
-    to_encode.update({"exp": time.time() + 3600})
+    to_encode.update({"exp": int(time.time()) + 3600, "jti": str(uuid.uuid4())})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 class SignupRequest(BaseModel):
@@ -123,11 +128,27 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     token = create_access_token({"sub": user["username"], "role": user["role"]})
     return {"access_token": token, "token_type": "bearer", "role": user["role"]}
 
+@app.post("/logout")
+@limiter.limit("20/minute")
+def logout(request: Request, token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if jti and exp:
+            revoke_token(jti, exp)
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    return {"status": "logged_out"}
+
 def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username = payload.get("sub")
         role = payload.get("role", "user")
+        jti = payload.get("jti")
+        if jti and is_token_revoked(jti):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
         user = get_user_by_username(username) if username else None
         if not user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
@@ -320,7 +341,7 @@ def api_explain(
         features_list.append([sev_w, freq_w, mod_w])
         
     features_array = np.array(features_list)
-    weights = get_current_weights()
+    weights = get_weights() or get_current_weights()
     shap_importance = compute_shap_importance(features_array, feature_names, weights)
 
     return {
@@ -360,6 +381,7 @@ def api_prioritize(
 ):
     data = [item.dict() for item in req.feedback]
     new_weights = optimize_weights(data)
+    set_weights(new_weights)
     ranked = prioritize_failures(data)
     return {"new_weights": new_weights, "ranked_failures": ranked}
 
@@ -499,25 +521,39 @@ def get_dashboard(
         for _, row in df.iterrows()
     ]
 
-    embeddings = generate_embeddings(
-        df["message"].tolist(),
-        EmbeddingConfig(use_longformer=len(df) > 2000),
+    coords_available = all(
+        f.get("cluster_x") is not None and f.get("cluster_y") is not None for f in failures
     )
-    if len(df) >= 2:
-        pca = PCA(n_components=2)
-        coords = pca.fit_transform(embeddings)
-    else:
-        coords = [[0.0, 0.0]]
-    cluster_points = []
-    for idx, row in df.iterrows():
-        cluster_points.append(
+    if coords_available:
+        cluster_points = [
             {
-                "cluster_id": int(row["cluster_id"]),
-                "x": float(coords[idx][0]),
-                "y": float(coords[idx][1]),
+                "cluster_id": int(f.get("cluster_id", 0)),
+                "x": float(f.get("cluster_x", 0.0)),
+                "y": float(f.get("cluster_y", 0.0)),
                 "size": 1,
             }
+            for f in failures
+        ]
+    else:
+        embeddings = generate_embeddings(
+            df["message"].tolist(),
+            EmbeddingConfig(use_longformer=len(df) > 2000),
         )
+        if len(df) >= 2:
+            pca = PCA(n_components=2)
+            coords = pca.fit_transform(embeddings)
+        else:
+            coords = [[0.0, 0.0]]
+        cluster_points = []
+        for idx, row in df.iterrows():
+            cluster_points.append(
+                {
+                    "cluster_id": int(row["cluster_id"]),
+                    "x": float(coords[idx][0]),
+                    "y": float(coords[idx][1]),
+                    "size": 1,
+                }
+            )
 
     return {
         "health_score": run.get("health_score"),
@@ -540,11 +576,17 @@ def get_failures(
     request: Request,
     run_id: int,
     user: str = Depends(get_current_user),
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
 ):
+    if limit is not None and limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be > 0")
+    if offset is not None and offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be >= 0")
     run = get_run(run_id, user_id=user["user_id"])
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    failures = get_failures_by_run(run_id)
+    failures = get_failures_by_run(run_id, limit=limit, offset=offset)
 
     return [
         {
@@ -557,6 +599,8 @@ def get_failures(
             "context": f.get("context"),
             "category": f.get("category"),
             "cluster_id": f.get("cluster_id"),
+            "cluster_x": f.get("cluster_x"),
+            "cluster_y": f.get("cluster_y"),
             "priority_score": f.get("priority_score"),
             "is_duplicate": f.get("is_duplicate"),
             "unique_failure_id": f.get("unique_failure_id"),
@@ -570,8 +614,15 @@ def get_failures(
 def list_runs(
     request: Request,
     user: str = Depends(get_current_user),
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
 ):
-    runs = get_runs(user_id=user["user_id"])
+    if limit is not None and limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be > 0")
+    if offset is not None and offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be >= 0")
+
+    runs = get_runs(user_id=user["user_id"], limit=limit, offset=offset)
 
     return [
         {

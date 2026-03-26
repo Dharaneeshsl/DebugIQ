@@ -30,8 +30,10 @@ export const uploadLog = (file, onProgress) => {
 };
 
 export const getDashboard = (runId) => client.get(`/dashboard/${runId}`);
-export const getFailures = (runId) => client.get(`/failures/${runId}`);
-export const getRuns = () => client.get(`/runs`);
+export const getFailures = (runId, { limit, offset } = {}) =>
+  client.get(`/failures/${runId}`, { params: { limit, offset } });
+export const getRuns = ({ limit, offset } = {}) =>
+  client.get(`/runs`, { params: { limit, offset } });
 export const deduplicateLogs = (logs, similarity_threshold = 0.9) =>
   client.post(`/deduplicate`, { logs, similarity_threshold });
 export const prioritizeFailures = (feedback) =>
@@ -40,6 +42,7 @@ export const getRootCause = (runId, failureId) =>
   client.get(`/root-cause/${runId}/${failureId}`);
 export const getExplanation = (runId, failureId) =>
   client.get(`/explain/${runId}/${failureId}`);
+export const logout = () => client.post(`/logout`);
 
 export const login = async (username, password) => {
   const body = new URLSearchParams();

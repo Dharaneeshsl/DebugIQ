@@ -13,6 +13,7 @@ from mongo_store import (
     create_run,
     add_failures,
     get_history_counts,
+    get_weights,
 )
 
 
@@ -29,26 +30,32 @@ def process_log_text(text: str, filename: str, *, user_id: int | None = None) ->
     preprocessed = preprocess_records(messages)
     categories = categorize_messages(messages)
     unique_ids, is_duplicate, embeddings = deduplicate(preprocessed)
-    cluster_ids, _cluster_points = cluster_embeddings(embeddings)
+    cluster_ids, cluster_points = cluster_embeddings(embeddings)
+    cluster_point_map = {p["failure_id"]: p for p in cluster_points}
 
     history_counts = get_history_counts(user_id=user_id)
 
     history_keys = [f"{p['module']}:{categories[idx]}" for idx, p in enumerate(parsed)]
+    weights = get_weights()
     scores, _freq_map = compute_scores(
         [p["severity"] for p in parsed],
         [p["module"] for p in parsed],
         unique_ids,
         history_keys=history_keys,
         history_counts=history_counts,
+        weights=weights,
     )
 
     failures = []
     for idx, p in enumerate(parsed):
+        point = cluster_point_map.get(idx, {})
         failures.append(
             {
                 **p,
                 "category": categories[idx],
                 "cluster_id": cluster_ids[idx],
+                "cluster_x": point.get("x"),
+                "cluster_y": point.get("y"),
                 "priority_score": scores[idx],
                 "is_duplicate": bool(is_duplicate[idx]),
                 "unique_failure_id": unique_ids[idx],

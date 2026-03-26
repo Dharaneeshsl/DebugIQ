@@ -31,3 +31,7 @@ jobs:
       - name: Import check
         run: |
           python -m py_compile backend/main.py backend/parser.py backend/preprocessor.py backend/categorizer.py backend/deduplicator.py backend/clusterer.py backend/scorer.py backend/database.py backend/schemas.py
+
+      - name: Tests
+        run: |
+          pytest -q backend/tests

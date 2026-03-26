@@ -5,7 +5,7 @@ import time
 
 import pika
 
-from mongo_store import init_mongo, get_upload_job, set_upload_job_status
+from mongo_store import init_mongo, get_upload_job, set_upload_job_status, increment_upload_job_retry
 from services.pipeline import process_log_text
 
 QUEUE_NAME = "debugiq_uploads"
@@ -44,7 +44,19 @@ def _consume_forever() -> None:
 
             set_upload_job_status(job_id, "completed", run_id=run_id)
         except Exception as exc:  # pragma: no cover
-            set_upload_job_status(job_id, "failed", error=str(exc))
+            retry_count = int(job.get("retry_count", 0))
+            max_retries = int(job.get("max_retries", 0))
+            if retry_count < max_retries:
+                increment_upload_job_retry(job_id)
+                set_upload_job_status(job_id, "queued", error=str(exc))
+                ch.basic_publish(
+                    exchange="",
+                    routing_key=QUEUE_NAME,
+                    body=str(job_id).encode("utf-8"),
+                    properties=pika.BasicProperties(delivery_mode=2),
+                )
+            else:
+                set_upload_job_status(job_id, "failed", error=str(exc))
 
         # Ack regardless: we mark failures in DB to avoid poison-pill loops.
         ch.basic_ack(delivery_tag=method.delivery_tag)
