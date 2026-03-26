@@ -15,6 +15,10 @@ const LogUpload = () => {
       const res = await uploadLog(file, setProgress);
       navigate(`/dashboard/${res.data.run_id}`);
     } catch (err) {
+      if (err?.response?.status === 401) {
+        navigate("/login");
+        return;
+      }
       setError(err?.response?.data?.detail || "Upload failed");
     }
   };
