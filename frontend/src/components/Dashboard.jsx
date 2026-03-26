@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { getDashboard, getFailures, exportCSV, uploadLog } from "../api/api";
+import { getDashboard, getFailures, exportCSV, uploadLog, getExplanation } from "../api/api";
 import HealthScore from "./HealthScore";
 import CategoryDistribution from "./CategoryDistribution";
 import FailurePriorityTable from "./FailurePriorityTable";
@@ -8,6 +8,8 @@ import ModuleHotspot from "./ModuleHotspot";
 import FailureClusters from "./FailureClusters";
 import FailureTimeline from "./FailureTimeline";
 import RootCauseSuggestion from "./RootCauseSuggestion";
+import GraphView from "./GraphView";
+import PriorityHeatmap from "./PriorityHeatmap";
 
 const Dashboard = () => {
   const { runId } = useParams();
@@ -17,6 +19,10 @@ const Dashboard = () => {
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [explain, setExplain] = useState(null);
+  const [shapImportance, setShapImportance] = useState(null);
+  const [explainLoading, setExplainLoading] = useState(false);
+  const [graphMode, setGraphMode] = useState("cluster");
 
   useEffect(() => {
     if (!runId) {
@@ -49,13 +55,52 @@ const Dashboard = () => {
         setFailures(failRes.data);
         setSelected(failRes.data[0] || null);
       } catch (err) {
-        setError(err?.response?.data?.detail || "Failed to load dashboard");
+          if (err?.response?.status === 401) {
+            navigate("/login");
+            return;
+          }
+          setError(err?.response?.data?.detail || "Failed to load dashboard");
       } finally {
         setLoading(false);
       }
     };
     fetchAll();
   }, [runId]);
+
+  useEffect(() => {
+    if (!runId || !selected?.id) {
+      setExplain(null);
+      setShapImportance(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadExplanation = async () => {
+      setExplainLoading(true);
+      try {
+        const res = await getExplanation(runId, selected.id);
+        if (cancelled) return;
+        setExplain(res.data.llm_explanation);
+        setShapImportance(res.data.shap_importance);
+      } catch (err) {
+        if (err?.response?.status === 401) {
+          navigate("/login");
+          return;
+        }
+        if (!cancelled) {
+          setExplain(null);
+          setShapImportance(null);
+        }
+      } finally {
+        if (!cancelled) setExplainLoading(false);
+      }
+    };
+
+    loadExplanation();
+    return () => {
+      cancelled = true;
+    };
+  }, [runId, selected?.id]);
 
   if (loading) {
     return (
@@ -78,6 +123,38 @@ const Dashboard = () => {
 
   const suggestion = dashboard.root_cause_suggestions.find((s) => s.failure_id === selected?.id)?.suggestion;
   const recommendation = dashboard.debug_recommendations.find((r) => r.failure_id === selected?.id)?.recommendation;
+
+  const severities = ["INFO", "WARNING", "ERROR", "FATAL"];
+  const modules = [...new Set(failures.map((f) => f.module))];
+  const heatmapData = modules.map((mod) =>
+    severities.map((sev) => failures.filter((f) => f.module === mod && f.severity === sev).length)
+  );
+
+  const graphNodes = failures.map((f) => ({
+    id: f.id,
+    group: f.cluster_id,
+    name: f.module,
+    category: f.category,
+    severity: f.severity,
+    unique_failure_id: f.unique_failure_id,
+  }));
+  const clusterEdges = [];
+  for (let i = 1; i < failures.length; i++) {
+    if (failures[i].module === failures[i - 1].module) {
+      clusterEdges.push({ source: failures[i - 1].id, target: failures[i].id });
+    }
+  }
+  const rootEdges = [];
+  const ufMap = new Map();
+  failures.forEach((f) => {
+    const key = f.unique_failure_id;
+    if (!ufMap.has(key)) {
+      ufMap.set(key, f.id);
+    } else {
+      rootEdges.push({ source: ufMap.get(key), target: f.id });
+    }
+  });
+  const graphEdges = graphMode === "root" ? rootEdges : clusterEdges;
 
   return (
     <div className="min-h-screen flex">
@@ -157,13 +234,76 @@ const Dashboard = () => {
             <div className="text-lg font-semibold mb-2">{selected?.module || "-"}</div>
             <div className="text-sm text-slate-300 mb-1">{selected?.category || "-"}</div>
             <div className="text-xs text-slate-500">{selected?.message || "Select a failure to inspect."}</div>
+            {selected?.context && (
+              <div className="mt-3">
+                <div className="text-xs text-slate-400 mb-2">Log Context</div>
+                <pre className="text-[11px] text-slate-300 whitespace-pre-wrap max-h-40 overflow-auto bg-slate-900/60 p-2 rounded">
+                  {selected.context}
+                </pre>
+              </div>
+            )}
+
+            <div className="mt-3">
+              <div className="text-xs text-slate-400 mb-2">AI Explanation</div>
+              {explainLoading && (
+                <div className="text-xs text-slate-500">Generating explanation...</div>
+              )}
+              {!explainLoading && explain && (
+                <>
+                  <pre className="text-[11px] text-slate-300 whitespace-pre-wrap max-h-48 overflow-auto bg-slate-900/60 p-2 rounded">
+                    {explain}
+                  </pre>
+                  {shapImportance && (
+                    <div className="mt-3">
+                      <div className="text-xs text-slate-500 mb-2">Feature Importance (SHAP)</div>
+                      <div className="text-xs text-slate-300">
+                        {Object.entries(shapImportance).map(([k, v]) => (
+                          <div key={k}>
+                            {k}: {v}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+              {!explainLoading && !explain && (
+                <div className="text-xs text-slate-500">Explanation will appear here.</div>
+              )}
+            </div>
           </div>
         </section>
 
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-          <FailureClusters data={dashboard.failure_clusters} />
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <button
+                className={`text-xs px-3 py-1 rounded-full border ${
+                  graphMode === "cluster"
+                    ? "bg-emerald-500/20 text-emerald-300 border-emerald-400/30"
+                    : "bg-slate-800 text-slate-300 border-slate-700"
+                }`}
+                onClick={() => setGraphMode("cluster")}
+              >
+                Cluster View
+              </button>
+              <button
+                className={`text-xs px-3 py-1 rounded-full border ${
+                  graphMode === "root"
+                    ? "bg-emerald-500/20 text-emerald-300 border-emerald-400/30"
+                    : "bg-slate-800 text-slate-300 border-slate-700"
+                }`}
+                onClick={() => setGraphMode("root")}
+              >
+                Root Cause View
+              </button>
+            </div>
+            <GraphView nodes={graphNodes} edges={graphEdges} />
+          </div>
           <FailureTimeline data={dashboard.failure_timeline} />
         </section>
+
+        <PriorityHeatmap xLabels={severities} yLabels={modules} data={heatmapData} />
 
         <RootCauseSuggestion suggestion={suggestion} recommendation={recommendation} />
 

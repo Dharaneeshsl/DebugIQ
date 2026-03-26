@@ -1,40 +1,144 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from typing import List, Dict
+from typing import List, Dict, Optional
 from pathlib import Path
 import io
 import gzip
 import pandas as pd
-from sentence_transformers import SentenceTransformer
+from pydantic import BaseModel
 from sklearn.decomposition import PCA
+
+from nlp.embeddings import generate_embeddings, EmbeddingConfig
+from ml.dedup_engine import DedupEngine, DedupConfig
+from ml.root_cause_graph import RootCauseAnalyzer
+from ml.causal_inference import estimate_causal_score
 
 from parser import parse_logs
 from preprocessor import preprocess_records
 from categorizer import categorize_messages
 from deduplicator import deduplicate
 from clusterer import cluster_embeddings
-from scorer import compute_scores
-from database import (
-    init_db,
-    SessionLocal,
+from scorer import compute_scores, optimize_weights, prioritize_failures
+from services.pipeline import process_log_text
+from database import verify_password, hash_password
+from mongo_store import (
+    init_mongo,
     create_run,
     add_failures,
     get_run,
     get_runs,
     get_failures_by_run,
     delete_run,
+    get_history_counts,
+    create_upload_job,
+    get_upload_job,
+    set_upload_job_status,
+    get_user_by_username,
+    create_user,
+    admin_exists,
 )
 
 app = FastAPI(title="DebugIQ API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from loguru import logger
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from prometheus_fastapi_instrumentator import Instrumentator
+import time
+import jwt
+import os
+import pika
+from dotenv import load_dotenv
+
+# Load env from backend/.env explicitly (works regardless of cwd)
+load_dotenv(dotenv_path=(Path(__file__).resolve().parent / ".env"))
+
+SECRET_KEY = os.environ.get("DEBUGIQ_JWT_SECRET", "debugiq_dev_only_secret_change_me")
+ALGORITHM = "HS256"
+ADMIN_USERNAME = os.environ.get("DEBUGIQ_ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("DEBUGIQ_ADMIN_PASSWORD", "admin123")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+Instrumentator().instrument(app).expose(app)
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    to_encode.update({"exp": time.time() + 3600})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+    role: str  # admin | user
+
+@app.get("/auth/admin-exists")
+def auth_admin_exists():
+    return {"admin_exists": admin_exists()}
+
+@app.post("/signup")
+@limiter.limit("10/minute")
+def signup(request: Request, payload: SignupRequest):
+    role = payload.role.strip().lower()
+    if role not in {"admin", "user"}:
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    if get_user_by_username(payload.username):
+        raise HTTPException(status_code=400, detail="Username already exists")
+    if role == "admin" and admin_exists():
+        raise HTTPException(status_code=400, detail="Admin already exists")
+
+    user = create_user(payload.username, hash_password(payload.password), role)
+
+    token = create_access_token({"sub": user["username"], "role": user["role"]})
+    return {"access_token": token, "token_type": "bearer", "role": user["role"]}
+
+@app.post("/token")
+@limiter.limit("10/minute")
+def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+    user = get_user_by_username(form_data.username)
+    if not user or not verify_password(form_data.password, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Incorrect credentials")
+
+    token = create_access_token({"sub": user["username"], "role": user["role"]})
+    return {"access_token": token, "token_type": "bearer", "role": user["role"]}
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        role = payload.get("role", "user")
+        user = get_user_by_username(username) if username else None
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        return {"username": username, "role": role, "user_id": user["_id"]}
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+@app.get("/secure-data")
+@limiter.limit("100/minute")
+def secure_data(request: Request, user: str = Depends(get_current_user)):
+    return {"message": f"Hello {user['username']}, this is a protected route.", "role": user["role"]}
 
 ROOT_CAUSE_MAP = {
     "assertion_failure": "Possible cause: violated design assumption; inspect surrounding signals",
@@ -52,14 +156,20 @@ RECOMMEND_MAP = {
     "memory_error": "Verify address decoder; check ECC logic and memory interface",
 }
 
-_model = None
+class DeduplicateRequest(BaseModel):
+    logs: List[str]
+    similarity_threshold: Optional[float] = None
 
+class FeedbackItem(BaseModel):
+    severity: str
+    module: str
+    frequency: int
+    is_critical: bool
+    history: int | None = 0
+    module_impact: float | None = 1.0
 
-def _get_model() -> SentenceTransformer:
-    global _model
-    if _model is None:
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
-    return _model
+class PrioritizeRequest(BaseModel):
+    feedback: List[FeedbackItem]
 
 
 def _read_upload(upload: UploadFile) -> str:
@@ -77,6 +187,30 @@ def _read_upload(upload: UploadFile) -> str:
         raise HTTPException(status_code=400, detail="Unable to decode file") from exc
 
 
+QUEUE_NAME = "debugiq_uploads"
+
+
+def _publish_upload_job(job_id: int) -> None:
+    """
+    Enqueue a log-processing job to RabbitMQ.
+    Worker consumes from `QUEUE_NAME`.
+    """
+    rabbit_url = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
+    params = pika.URLParameters(rabbit_url)
+    connection = pika.BlockingConnection(params)
+    try:
+        channel = connection.channel()
+        channel.queue_declare(queue=QUEUE_NAME, durable=True)
+        channel.basic_publish(
+            exchange="",
+            routing_key=QUEUE_NAME,
+            body=str(job_id).encode("utf-8"),
+            properties=pika.BasicProperties(delivery_mode=2),
+        )
+    finally:
+        connection.close()
+
+
 def _health_score(total: int, unique: int) -> float:
     if total == 0:
         return 100.0
@@ -90,7 +224,14 @@ def _to_dataframe(failures: List[Dict]) -> pd.DataFrame:
 
 @app.on_event("startup")
 def on_startup() -> None:
-    init_db()
+    init_mongo()
+    # Seed a single fixed admin if none exists.
+    if not admin_exists():
+        try:
+            create_user(ADMIN_USERNAME, hash_password(ADMIN_PASSWORD), "admin")
+            logger.info("Seeded initial admin user from environment.")
+        except Exception as exc:
+            logger.warning("Failed to seed admin user: %s", exc)
 
 
 @app.get("/health")
@@ -98,62 +239,178 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/upload")
-def upload_log(file: UploadFile = File(...)):
-    text = _read_upload(file)
-    parsed = parse_logs(text)
-    if not parsed:
-        raise HTTPException(status_code=400, detail="No valid log lines found")
+@app.get("/root-cause/{run_id}/{failure_id}")
+@limiter.limit("40/minute")
+def api_root_cause(
+    request: Request,
+    run_id: int,
+    failure_id: int,
+    user: str = Depends(get_current_user),
+):
+    run = get_run(run_id, user_id=user["user_id"])
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    failures = get_failures_by_run(run_id)
+        
+    failures_list = [{
+        "id": f["_id"],
+        "timestamp": f.get("timestamp"),
+        "module": f.get("module"),
+        "category": f.get("category"),
+        "severity": f.get("severity")
+    } for f in failures]
+    
+    analyzer = RootCauseAnalyzer()
+    analyzer.build_temporal_graph(failures_list)
+    causes = analyzer.analyze_root_cause(failure_id)
 
-    messages = [p["message"] for p in parsed]
-    preprocessed = preprocess_records(messages)
-    categories = categorize_messages(messages)
-    unique_ids, is_duplicate, embeddings = deduplicate(preprocessed)
-    cluster_ids, cluster_points = cluster_embeddings(embeddings)
+    scored = []
+    for c in causes:
+        scored.append({**c, "causal_score": estimate_causal_score(c, failures_list)})
+    
+    return {"target_failure_id": failure_id, "potential_root_causes": scored}
 
-    scores, freq_map = compute_scores(
-        [p["severity"] for p in parsed],
-        [p["module"] for p in parsed],
-        unique_ids,
-    )
 
-    failures = []
-    for idx, p in enumerate(parsed):
-        failures.append(
-            {
-                **p,
-                "category": categories[idx],
-                "cluster_id": cluster_ids[idx],
-                "priority_score": scores[idx],
-                "is_duplicate": bool(is_duplicate[idx]),
-                "unique_failure_id": unique_ids[idx],
-            }
-        )
+@app.get("/explain/{run_id}/{failure_id}")
+@limiter.limit("40/minute")
+def api_explain(
+    request: Request,
+    run_id: int,
+    failure_id: int,
+    user: str = Depends(get_current_user),
+):
+    run = get_run(run_id, user_id=user["user_id"])
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    failures = get_failures_by_run(run_id)
 
-    total = len(failures)
-    unique = len(set(unique_ids))
-    critical = sum(1 for f in failures if f["severity"] == "FATAL")
-    health = _health_score(total, unique)
+    target_failure = next((f for f in failures if f["_id"] == failure_id), None)
+    if not target_failure:
+        raise HTTPException(status_code=404, detail="Failure not found")
 
-    session = SessionLocal()
-    try:
-        run = create_run(session, file.filename, total, unique, critical, health)
-        run_id = run.id
-        add_failures(session, run_id, failures)
-    finally:
-        session.close()
+    from ml.explainability import generate_llm_explanation, compute_shap_importance
+    from scorer import get_current_weights, SEVERITY_WEIGHTS, MODULE_WEIGHTS
+    import numpy as np
+
+    failure_context = {
+        "id": target_failure["_id"],
+        "module": target_failure.get("module"),
+        "severity": target_failure.get("severity"),
+        "category": target_failure.get("category"),
+        "message": target_failure.get("message"),
+        "context": target_failure.get("context"),
+    }
+
+    explanation = generate_llm_explanation(failure_context)
+    
+    features_list = []
+    freq_map = {}
+    for f in failures:
+        key = f.get("unique_failure_id")
+        freq_map[key] = freq_map.get(key, 0) + 1
+    max_freq = max(freq_map.values()) if freq_map else 1
+
+    feature_names = ["severity", "frequency", "module"]
+    ordered_failures = [target_failure] + [f for f in failures if f["_id"] != failure_id]
+    
+    for f in ordered_failures:
+        sev_w = SEVERITY_WEIGHTS.get(f.get("severity"), 0.1)
+        freq_w = freq_map.get(f.get("unique_failure_id"), 0) / max_freq
+        mod_w = MODULE_WEIGHTS.get(f.get("module"), 0.5)
+        features_list.append([sev_w, freq_w, mod_w])
+        
+    features_array = np.array(features_list)
+    weights = get_current_weights()
+    shap_importance = compute_shap_importance(features_array, feature_names, weights)
 
     return {
-        "run_id": run_id,
-        "total_failures": total,
-        "unique_failures": unique,
-        "critical_count": critical,
-        "health_score": health,
+        "failure_id": failure_id,
+        "llm_explanation": explanation,
+        "shap_importance": shap_importance
     }
 
 
+@app.post("/deduplicate")
+@limiter.limit("60/minute")
+def api_deduplicate(
+    request: Request,
+    req: DeduplicateRequest,
+    user: str = Depends(get_current_user),
+):
+    cfg = DedupConfig()
+    if req.similarity_threshold is not None:
+        cfg.similarity_threshold = req.similarity_threshold
+    engine = DedupEngine(cfg)
+    unique_ids, is_duplicate, _embeddings = engine.deduplicate(req.logs)
+    return {
+        "unique_ids": unique_ids,
+        "is_duplicate": is_duplicate,
+        "total_logs": len(req.logs),
+        "unique_count": len(set(unique_ids)) if unique_ids else 0,
+        "duplicate_count": int(sum(1 for flag in is_duplicate if flag)),
+    }
+
+
+@app.post("/prioritize")
+@limiter.limit("60/minute")
+def api_prioritize(
+    request: Request,
+    req: PrioritizeRequest,
+    user: str = Depends(get_current_user),
+):
+    data = [item.dict() for item in req.feedback]
+    new_weights = optimize_weights(data)
+    ranked = prioritize_failures(data)
+    return {"new_weights": new_weights, "ranked_failures": ranked}
+
+
+@app.post("/upload")
+@limiter.limit("5/minute")
+def upload_log(
+    request: Request,
+    file: UploadFile = File(...),
+    user: str = Depends(get_current_user),
+):
+    text = _read_upload(file)
+    try:
+        return process_log_text(text, file.filename or "upload.log", user_id=user["user_id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/upload-async")
+@limiter.limit("5/minute")
+def upload_log_async(
+    request: Request,
+    file: UploadFile = File(...),
+    user: str = Depends(get_current_user),
+):
+    text = _read_upload(file)
+    job = create_upload_job(file.filename or "upload.log", text, user_id=user["user_id"])
+    _publish_upload_job(job["_id"])
+    return {"job_id": job["_id"]}
+
+
+@app.get("/job-status/{job_id}")
+@limiter.limit("40/minute")
+def api_job_status(
+    request: Request,
+    job_id: int,
+    user: str = Depends(get_current_user),
+):
+    job = get_upload_job(job_id, user_id=user["user_id"])
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"job_id": job["_id"], "status": job["status"], "run_id": job["run_id"], "error": job.get("error")}
+
+
 @app.post("/debug-upload")
-async def debug_upload(file: UploadFile = File(...)):
+@limiter.limit("20/minute")
+async def debug_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    user: str = Depends(get_current_user),
+):
     content = await file.read()
     text = content.decode("utf-8", errors="ignore")
     lines = text.splitlines()
@@ -165,31 +422,33 @@ async def debug_upload(file: UploadFile = File(...)):
 
 
 @app.get("/dashboard/{run_id}")
-def get_dashboard(run_id: int):
-    session = SessionLocal()
-    try:
-        run = get_run(session, run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="Run not found")
-        failures = get_failures_by_run(session, run_id)
-    finally:
-        session.close()
+@limiter.limit("40/minute")
+def get_dashboard(
+    request: Request,
+    run_id: int,
+    user: str = Depends(get_current_user),
+):
+    run = get_run(run_id, user_id=user["user_id"])
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    failures = get_failures_by_run(run_id)
 
     if not failures:
         raise HTTPException(status_code=404, detail="No failures found")
 
     df = pd.DataFrame([{
-        "id": f.id,
-        "timestamp": f.timestamp,
-        "severity": f.severity,
-        "module": f.module,
-        "line_no": f.line_no,
-        "message": f.message,
-        "category": f.category,
-        "cluster_id": f.cluster_id,
-        "priority_score": f.priority_score,
-        "is_duplicate": f.is_duplicate,
-        "unique_failure_id": f.unique_failure_id,
+        "id": f["_id"],
+        "timestamp": f.get("timestamp"),
+        "severity": f.get("severity"),
+        "module": f.get("module"),
+        "line_no": f.get("line_no"),
+        "message": f.get("message"),
+        "context": f.get("context"),
+        "category": f.get("category"),
+        "cluster_id": f.get("cluster_id"),
+        "priority_score": f.get("priority_score"),
+        "is_duplicate": f.get("is_duplicate"),
+        "unique_failure_id": f.get("unique_failure_id"),
     } for f in failures])
 
     category_distribution = (
@@ -219,15 +478,18 @@ def get_dashboard(run_id: int):
         .to_dict(orient="records")
     )
 
-    root_cause_suggestions = [
-        {
-            "failure_id": int(row["id"]),
-            "module": row["module"],
-            "category": row["category"],
-            "suggestion": ROOT_CAUSE_MAP.get(row["category"], "Investigate failure context"),
-        }
-        for _, row in df.iterrows()
-    ]
+    root_cause_suggestions = []
+    history = df.to_dict(orient="records")
+    for _, row in df.iterrows():
+        root_cause_suggestions.append(
+            {
+                "failure_id": int(row["id"]),
+                "module": row["module"],
+                "category": row["category"],
+                "suggestion": ROOT_CAUSE_MAP.get(row["category"], "Investigate failure context"),
+                "causal_score": estimate_causal_score(row, history),
+            }
+        )
 
     debug_recommendations = [
         {
@@ -237,8 +499,10 @@ def get_dashboard(run_id: int):
         for _, row in df.iterrows()
     ]
 
-    model = _get_model()
-    embeddings = model.encode(df["message"].tolist(), normalize_embeddings=True)
+    embeddings = generate_embeddings(
+        df["message"].tolist(),
+        EmbeddingConfig(use_longformer=len(df) > 2000),
+    )
     if len(df) >= 2:
         pca = PCA(n_components=2)
         coords = pca.fit_transform(embeddings)
@@ -256,10 +520,10 @@ def get_dashboard(run_id: int):
         )
 
     return {
-        "health_score": run.health_score,
-        "total_failures": run.total_failures,
-        "unique_failures": run.unique_failures,
-        "critical_count": run.critical_count,
+        "health_score": run.get("health_score"),
+        "total_failures": run.get("total_failures"),
+        "unique_failures": run.get("unique_failures"),
+        "critical_count": run.get("critical_count"),
         "category_distribution": category_distribution,
         "module_hotspots": module_hotspots,
         "priority_ranking": priority_ranking,
@@ -271,94 +535,99 @@ def get_dashboard(run_id: int):
 
 
 @app.get("/failures/{run_id}")
-def get_failures(run_id: int):
-    session = SessionLocal()
-    try:
-        run = get_run(session, run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="Run not found")
-        failures = get_failures_by_run(session, run_id)
-    finally:
-        session.close()
+@limiter.limit("60/minute")
+def get_failures(
+    request: Request,
+    run_id: int,
+    user: str = Depends(get_current_user),
+):
+    run = get_run(run_id, user_id=user["user_id"])
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    failures = get_failures_by_run(run_id)
 
     return [
         {
-            "id": f.id,
-            "timestamp": f.timestamp,
-            "severity": f.severity,
-            "module": f.module,
-            "line_no": f.line_no,
-            "message": f.message,
-            "category": f.category,
-            "cluster_id": f.cluster_id,
-            "priority_score": f.priority_score,
-            "is_duplicate": f.is_duplicate,
-            "unique_failure_id": f.unique_failure_id,
+            "id": f["_id"],
+            "timestamp": f.get("timestamp"),
+            "severity": f.get("severity"),
+            "module": f.get("module"),
+            "line_no": f.get("line_no"),
+            "message": f.get("message"),
+            "context": f.get("context"),
+            "category": f.get("category"),
+            "cluster_id": f.get("cluster_id"),
+            "priority_score": f.get("priority_score"),
+            "is_duplicate": f.get("is_duplicate"),
+            "unique_failure_id": f.get("unique_failure_id"),
         }
         for f in failures
     ]
 
 
 @app.get("/runs")
-def list_runs():
-    session = SessionLocal()
-    try:
-        runs = get_runs(session)
-    finally:
-        session.close()
+@limiter.limit("60/minute")
+def list_runs(
+    request: Request,
+    user: str = Depends(get_current_user),
+):
+    runs = get_runs(user_id=user["user_id"])
 
     return [
         {
-            "id": r.id,
-            "filename": r.filename,
-            "uploaded_at": r.uploaded_at.isoformat(),
-            "total_failures": r.total_failures,
-            "unique_failures": r.unique_failures,
-            "critical_count": r.critical_count,
-            "health_score": r.health_score,
+            "id": r["_id"],
+            "filename": r.get("filename"),
+            "uploaded_at": r.get("uploaded_at").isoformat(),
+            "total_failures": r.get("total_failures"),
+            "unique_failures": r.get("unique_failures"),
+            "critical_count": r.get("critical_count"),
+            "health_score": r.get("health_score"),
         }
         for r in runs
     ]
 
 
 @app.delete("/run/{run_id}")
-def delete_run_by_id(run_id: int):
-    session = SessionLocal()
-    try:
-        run = get_run(session, run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="Run not found")
-        delete_run(session, run_id)
-    finally:
-        session.close()
+@limiter.limit("40/minute")
+def delete_run_by_id(
+    request: Request,
+    run_id: int,
+    user: str = Depends(get_current_user),
+):
+    run = get_run(run_id, user_id=user["user_id"])
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    delete_run(run_id, user_id=user["user_id"])
     return {"status": "deleted"}
 
 
 @app.get("/report/{run_id}")
-def export_report(run_id: int, format: str = "csv"):
+@limiter.limit("20/minute")
+def export_report(
+    request: Request,
+    run_id: int,
+    format: str = "csv",
+    user: str = Depends(get_current_user),
+):
     if format.lower() != "csv":
         raise HTTPException(status_code=400, detail="Only CSV format supported")
 
-    session = SessionLocal()
-    try:
-        run = get_run(session, run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="Run not found")
-        failures = get_failures_by_run(session, run_id)
-    finally:
-        session.close()
+    run = get_run(run_id, user_id=user["user_id"])
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    failures = get_failures_by_run(run_id)
 
     df = pd.DataFrame([{
-        "timestamp": f.timestamp,
-        "severity": f.severity,
-        "module": f.module,
-        "line_no": f.line_no,
-        "message": f.message,
-        "category": f.category,
-        "cluster_id": f.cluster_id,
-        "priority_score": f.priority_score,
-        "is_duplicate": f.is_duplicate,
-        "unique_failure_id": f.unique_failure_id,
+        "timestamp": f.get("timestamp"),
+        "severity": f.get("severity"),
+        "module": f.get("module"),
+        "line_no": f.get("line_no"),
+        "message": f.get("message"),
+        "category": f.get("category"),
+        "cluster_id": f.get("cluster_id"),
+        "priority_score": f.get("priority_score"),
+        "is_duplicate": f.get("is_duplicate"),
+        "unique_failure_id": f.get("unique_failure_id"),
     } for f in failures])
 
     buffer = io.StringIO()
