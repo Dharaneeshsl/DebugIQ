@@ -21,10 +21,9 @@ except Exception:  # pragma: no cover
 import shap
 import numpy as np
 
-MOCK_EXPLANATION = (
-    "Based on the log context, this failure is likely caused by a sequence violation. "
-    "The priority score was primarily driven by its high severity and recurrence. "
-    "Recommendation: Verify state transitions and module interfaces preceding this timestamp."
+_LLM_NOT_CONFIGURED = (
+    "LLM explanation is disabled because no provider key is configured. "
+    "Set `GEMINI_API_KEY` (preferred) or `GROQ_KEY`, or `OPENAI_API_KEY` in the backend environment."
 )
 
 def _build_retrieval_corpus() -> List[Dict[str, str]]:
@@ -125,18 +124,7 @@ Return:
 3) 3-5 concrete debugging actions (ordered)
 """.strip()
 
-    # 1) Gemini (primary, if configured)
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-    if gemini_key and genai is not None:
-        try:
-            genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            response = model.generate_content(prompt)
-            return response.text.strip()
-        except Exception:
-            pass
-
-    # 2) Fallback: OpenAI-compatible Groq (if configured)
+    # 1) Groq (primary, if configured)
     groq_key = os.environ.get("GROQ_KEY")
     groq_base_url = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
     if groq_key and GroqClient is not None:
@@ -158,7 +146,7 @@ Return:
         except Exception:
             pass
 
-    # 3) Fallback: OpenAI-compatible APIs (if configured)
+    # 2) Fallback: OpenAI-compatible APIs (if configured)
     openai_key = os.environ.get("OPENAI_API_KEY")
     if openai_key and OpenAI is not None:
         try:
@@ -178,8 +166,19 @@ Return:
         except Exception:
             pass
 
-    rag_hint = f" Retrieved context: {' | '.join(retrieved)}" if retrieved else ""
-    return "[MOCK LLM] " + MOCK_EXPLANATION + rag_hint
+    # 3) Fallback: Gemini (if configured)
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_key and genai is not None:
+        try:
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content(prompt)
+            return response.text.strip()
+        except Exception:
+            pass
+
+    # No mock data: if no provider is configured, return a clear message.
+    return _LLM_NOT_CONFIGURED
 
 
 def compute_shap_importance(features_array: np.ndarray, feature_names: list, weights: dict) -> dict:

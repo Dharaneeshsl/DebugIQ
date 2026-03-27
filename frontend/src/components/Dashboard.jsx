@@ -168,28 +168,35 @@ const Dashboard = () => {
 
   const graphNodes = failures.map((f) => ({
     id: f.id,
-    group: f.cluster_id,
+    group: f.cluster_id ?? 0,
     name: f.module,
     category: f.category,
     severity: f.severity,
     unique_failure_id: f.unique_failure_id,
+    timestamp: f.timestamp,
   }));
+
+  // Cluster view: connect each node to a cluster "hub" for readability.
   const clusterEdges = [];
-  for (let i = 1; i < failures.length; i++) {
-    if (failures[i].module === failures[i - 1].module) {
-      clusterEdges.push({ source: failures[i - 1].id, target: failures[i].id });
+  const clusterHub = new Map();
+  for (const n of graphNodes) {
+    const c = n.group ?? 0;
+    if (!clusterHub.has(c)) {
+      clusterHub.set(c, n.id);
+    } else {
+      clusterEdges.push({ source: clusterHub.get(c), target: n.id });
     }
   }
+
+  // Root cause view: temporal topology (connect each failure to up to 3 prior failures).
   const rootEdges = [];
-  const ufMap = new Map();
-  failures.forEach((f) => {
-    const key = f.unique_failure_id;
-    if (!ufMap.has(key)) {
-      ufMap.set(key, f.id);
-    } else {
-      rootEdges.push({ source: ufMap.get(key), target: f.id });
+  const sortedByTime = [...graphNodes].sort((a, b) => String(a.timestamp || "").localeCompare(String(b.timestamp || "")));
+  for (let i = 0; i < sortedByTime.length; i++) {
+    for (let j = Math.max(0, i - 3); j < i; j++) {
+      rootEdges.push({ source: sortedByTime[j].id, target: sortedByTime[i].id });
     }
-  });
+  }
+
   const graphEdges = graphMode === "root" ? rootEdges : clusterEdges;
 
   return (

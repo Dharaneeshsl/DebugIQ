@@ -3,6 +3,7 @@ import ForceGraph2D from "react-force-graph-2d";
 
 export default function GraphView({ nodes = [], edges = [] }) {
   const wrapRef = useRef(null);
+  const graphRef = useRef(null);
   const [size, setSize] = useState({ w: 600, h: 360 });
   const graphData = { nodes, links: edges };
 
@@ -19,6 +20,30 @@ export default function GraphView({ nodes = [], edges = [] }) {
     return () => ro.disconnect();
   }, []);
 
+  useEffect(() => {
+    // Improve first render: center & zoom-to-fit once we have data and a size.
+    const g = graphRef.current;
+    if (!g) return;
+    if (!nodes?.length) return;
+    // Let the engine settle briefly then fit.
+    const t = setTimeout(() => {
+      try {
+        g.zoomToFit(500, 40);
+      } catch {
+        // ignore
+      }
+    }, 150);
+    return () => clearTimeout(t);
+  }, [nodes?.length, edges?.length, size.w, size.h]);
+
+  const severityVal = (sev) => {
+    const s = String(sev || "").toUpperCase();
+    if (s === "FATAL" || s === "CRITICAL") return 6;
+    if (s === "ERROR") return 4;
+    if (s === "WARNING") return 3;
+    return 2;
+  };
+
   return (
     <div className="glass rounded-xl p-4 card-glow">
       <h3 className="text-sm text-slate-300 mb-2">Failure Clustering & Root Cause Topology</h3>
@@ -29,6 +54,7 @@ export default function GraphView({ nodes = [], edges = [] }) {
           </div>
         ) : (
           <ForceGraph2D
+            ref={graphRef}
             graphData={graphData}
             width={size.w}
             height={size.h}
@@ -44,7 +70,10 @@ export default function GraphView({ nodes = [], edges = [] }) {
                 .join("\n")
             }
             nodeAutoColorBy="group"
-            linkColor={() => "rgba(148, 163, 184, 0.5)"}
+            nodeVal={(n) => severityVal(n.severity)}
+            nodeRelSize={4}
+            linkColor={() => "rgba(148, 163, 184, 0.35)"}
+            linkWidth={0.6}
             linkDirectionalArrowLength={3.5}
             linkDirectionalArrowRelPos={1}
           />
