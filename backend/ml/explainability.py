@@ -12,6 +12,12 @@ try:
 except ImportError:
     genai = None
 
+try:
+    # Groq-compatible OpenAI client
+    from openai import OpenAI as GroqClient
+except Exception:  # pragma: no cover
+    GroqClient = None
+
 import shap
 import numpy as np
 
@@ -130,7 +136,29 @@ Return:
         except Exception:
             pass
 
-    # 2) Fallback: OpenAI-compatible APIs (if configured)
+    # 2) Fallback: OpenAI-compatible Groq (if configured)
+    groq_key = os.environ.get("GROQ_KEY")
+    groq_base_url = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+    if groq_key and GroqClient is not None:
+        try:
+            groq_model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+            groq = GroqClient(api_key=groq_key, base_url=groq_base_url)
+            resp = groq.chat.completions.create(
+                model=groq_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a production-grade debugging assistant for chip verification logs.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception:
+            pass
+
+    # 3) Fallback: OpenAI-compatible APIs (if configured)
     openai_key = os.environ.get("OPENAI_API_KEY")
     if openai_key and OpenAI is not None:
         try:
