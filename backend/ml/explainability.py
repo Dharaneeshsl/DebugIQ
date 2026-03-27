@@ -21,12 +21,6 @@ except Exception:  # pragma: no cover
 import shap
 import numpy as np
 
-MOCK_EXPLANATION = (
-    "Based on the log context, this failure is likely caused by a sequence violation. "
-    "The priority score was primarily driven by its high severity and recurrence. "
-    "Recommendation: Verify state transitions and module interfaces preceding this timestamp."
-)
-
 def _build_retrieval_corpus() -> List[Dict[str, str]]:
     """
     Lightweight retrieval corpus for RAG grounding.
@@ -125,21 +119,14 @@ Return:
 3) 3-5 concrete debugging actions (ordered)
 """.strip()
 
-    # 1) Gemini (primary, if configured)
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-    if gemini_key and genai is not None:
-        try:
-            genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            response = model.generate_content(prompt)
-            return response.text.strip()
-        except Exception:
-            pass
+    has_provider_key = False
+    last_error = None
 
-    # 2) Fallback: OpenAI-compatible Groq (if configured)
+    # 1) Groq (primary, if configured)
     groq_key = os.environ.get("GROQ_KEY")
     groq_base_url = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
     if groq_key and GroqClient is not None:
+        has_provider_key = True
         try:
             groq_model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
             groq = GroqClient(api_key=groq_key, base_url=groq_base_url)
@@ -155,12 +142,13 @@ Return:
                 temperature=0.2,
             )
             return resp.choices[0].message.content.strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = exc
 
-    # 3) Fallback: OpenAI-compatible APIs (if configured)
+    # 2) Fallback: OpenAI-compatible APIs (if configured)
     openai_key = os.environ.get("OPENAI_API_KEY")
     if openai_key and OpenAI is not None:
+        has_provider_key = True
         try:
             base_url = os.environ.get("OPENAI_BASE_URL")
             client = OpenAI(api_key=openai_key, base_url=base_url) if base_url else OpenAI(api_key=openai_key)
@@ -175,11 +163,26 @@ Return:
                 temperature=0.2,
             )
             return resp.choices[0].message.content.strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = exc
 
-    rag_hint = f" Retrieved context: {' | '.join(retrieved)}" if retrieved else ""
-    return "[MOCK LLM] " + MOCK_EXPLANATION + rag_hint
+    # 3) Fallback: Gemini (if configured)
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_key and genai is not None:
+        has_provider_key = True
+        try:
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content(prompt)
+            return response.text.strip()
+        except Exception as exc:
+            last_error = exc
+
+    if not has_provider_key:
+        raise RuntimeError(
+            "No LLM provider key configured. Set one of: GROQ_KEY, OPENAI_API_KEY, GEMINI_API_KEY."
+        )
+    raise RuntimeError(f"All configured LLM providers failed. Last error: {last_error}")
 
 
 def compute_shap_importance(features_array: np.ndarray, feature_names: list, weights: dict) -> dict:

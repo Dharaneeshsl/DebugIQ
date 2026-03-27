@@ -14,17 +14,30 @@ if (!(Test-Path $LogPath)) {
 }
 
 Write-Host "1) Get token..."
-$tokenResp = Invoke-RestMethod -Method Post -Uri "$BaseUrl/token" -ContentType "application/x-www-form-urlencoded" -Body "username=$Username&password=$Password"
-$token = $tokenResp.access_token
+try {
+  $tokenResp = Invoke-RestMethod -Method Post -Uri "$BaseUrl/token" -ContentType "application/x-www-form-urlencoded" -Body "username=$Username&password=$Password"
+  $token = $tokenResp.access_token
+} catch {
+  $token = $null
+}
+
+if (!$token) {
+  Write-Host "   Admin login failed; creating a temporary user..."
+  $tmpUser = ("smoke_" + [DateTime]::UtcNow.ToString("yyyyMMddHHmmss") + "@debugiq.local")
+  $tmpPass = "smoke_test_pw_123!"
+  Invoke-RestMethod -Method Post -Uri "$BaseUrl/signup" -ContentType "application/json" -Body (@{ username = $tmpUser; password = $tmpPass; role = "user" } | ConvertTo-Json) | Out-Null
+  $tokenResp = Invoke-RestMethod -Method Post -Uri "$BaseUrl/token" -ContentType "application/x-www-form-urlencoded" -Body "username=$tmpUser&password=$tmpPass"
+  $token = $tokenResp.access_token
+}
+
 if (!$token) { throw "Token missing" }
 
 $headers = @{ Authorization = "Bearer $token" }
 
 Write-Host "2) Upload log..."
-$form = @{
-  file = Get-Item $LogPath
-}
-$uploadResp = Invoke-RestMethod -Method Post -Uri "$BaseUrl/upload" -Headers $headers -Form $form
+$uploadJson = & curl.exe -sS -X POST "$BaseUrl/upload" -H "Authorization: Bearer $token" -F "file=@$LogPath"
+if (!$uploadJson) { throw "Upload returned empty response" }
+$uploadResp = $uploadJson | ConvertFrom-Json
 $runId = $uploadResp.run_id
 if (!$runId) { throw "run_id missing" }
 Write-Host "Uploaded. run_id=$runId"
@@ -41,7 +54,11 @@ Write-Host ("first_failure_id=" + $first.id)
 
 Write-Host "5) Explain..."
 $exp = Invoke-RestMethod -Method Get -Uri "$BaseUrl/explain/$runId/$($first.id)" -Headers $headers
-Write-Host "Explanation received."
+$preview = $exp.llm_explanation
+if (!$preview) { throw "llm_explanation missing" }
+$preview = $preview.Substring(0, [Math]::Min(120, $preview.Length))
+$preview = ($preview -replace "`r`n", " ") -replace "`n", " "
+Write-Host ("Explanation received. preview=" + $preview)
 
 Write-Host "OK: DebugIQ is submission-ready."
 

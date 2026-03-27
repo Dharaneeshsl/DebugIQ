@@ -343,7 +343,10 @@ def api_explain(
         "context": target_failure.get("context"),
     }
 
-    explanation = generate_llm_explanation(failure_context)
+    try:
+        explanation = generate_llm_explanation(failure_context)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"LLM provider error: {str(exc)}")
     
     features_list = []
     freq_map = {}
@@ -531,11 +534,40 @@ def get_dashboard(
         .to_dict(orient="records")
     )
 
-    failure_timeline = (
-        df.groupby("timestamp").size().reset_index(name="count")
-        .rename(columns={"timestamp": "time"})
-        .to_dict(orient="records")
-    )
+    # Build an adaptive timeline histogram so the chart is informative for both
+    # short and long logs (avoid mostly-flat count=1 lines).
+    ts_series = pd.to_datetime(df["timestamp"], errors="coerce")
+    if ts_series.notna().any():
+        sec = (ts_series.astype("int64") // 1_000_000_000).astype("int64")
+        sec_min = int(sec.min())
+        sec_max = int(sec.max())
+        span = max(sec_max - sec_min + 1, 1)
+        target_bins = 24
+        bin_width_sec = max(1, int((span + target_bins - 1) // target_bins))
+
+        bucket = ((sec - sec_min) // bin_width_sec) * bin_width_sec + sec_min
+        timeline_df = pd.DataFrame({"bucket": bucket})
+        failure_timeline = (
+            timeline_df.groupby("bucket").size().reset_index(name="count")
+            .sort_values("bucket")
+        )
+        failure_timeline["time"] = pd.to_datetime(
+            failure_timeline["bucket"], unit="s"
+        ).dt.strftime("%H:%M:%S")
+        failure_timeline = failure_timeline[["time", "count"]].to_dict(orient="records")
+    else:
+        # Fallback: monotonic bucket by parsed row index if timestamps are unusable.
+        n = len(df)
+        target_bins = 24
+        bucket_size = max(1, (n + target_bins - 1) // target_bins)
+        idx_df = pd.DataFrame({"bucket": [i // bucket_size for i in range(n)]})
+        failure_timeline = (
+            idx_df.groupby("bucket").size().reset_index(name="count").to_dict(orient="records")
+        )
+        failure_timeline = [
+            {"time": f"bucket_{int(item['bucket'])}", "count": int(item["count"])}
+            for item in failure_timeline
+        ]
 
     root_cause_suggestions = []
     history = df.to_dict(orient="records")
@@ -721,6 +753,8 @@ def update_failure_status_api(
     if not existing:
         raise HTTPException(status_code=404, detail="Failure not found")
     updated = update_failure_status(failure_id, status_val, user_id=user["user_id"])
+    if not updated:
+        raise HTTPException(status_code=404, detail="Failure not found")
     return {
         "id": updated["_id"],
         "status": updated.get("status"),
