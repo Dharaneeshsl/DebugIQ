@@ -11,7 +11,7 @@ const Login = () => {
 
   useEffect(() => {
     const token = localStorage.getItem("debugiq_token");
-    if (token) navigate("/");
+    if (token) navigate("/dashboard");
   }, []);
 
   const onSubmit = async (e) => {
@@ -20,7 +20,7 @@ const Login = () => {
     setLoading(true);
     try {
       await login(username, password);
-      navigate("/");
+      navigate("/dashboard");
     } catch (err) {
       setError(err?.response?.data?.detail || "Login failed");
     } finally {

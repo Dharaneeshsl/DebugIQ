@@ -34,6 +34,8 @@ from mongo_store import (
     create_upload_job,
     get_upload_job,
     set_upload_job_status,
+    update_failure_status,
+    get_failure_by_id,
     get_user_by_username,
     create_user,
     admin_exists,
@@ -162,6 +164,13 @@ def secure_data(request: Request, user: str = Depends(get_current_user)):
     return {"message": f"Hello {user['username']}, this is a protected route.", "role": user["role"]}
 
 ROOT_CAUSE_MAP = {
+    "uvm_fatal": "UVM fatal: check testbench stop conditions, fatal assertions, and upstream UVM components",
+    "uvm_error": "UVM error: trace sequence, scoreboard, and driver/monitor interactions",
+    "uvm_warning": "UVM warning: inspect non-fatal protocol or coverage warnings",
+    "uvm_phase_error": "UVM phase error: validate build/connect/run phase ordering and objections",
+    "uvm_sequence_error": "UVM sequence error: inspect sequencer arbitration and sequence item flow",
+    "uvm_scoreboard_mismatch": "Scoreboard mismatch: compare expected vs actual transactions and predictors",
+    "sva_assertion_failure": "SVA assertion failure: inspect assertion antecedent and signal stability window",
     "assertion_failure": "Possible cause: violated design assumption; inspect surrounding signals",
     "timeout_error": "Possible cause: clock domain issue or stalled handshake",
     "protocol_violation": "Possible cause: incorrect sequencing; verify FSM transitions",
@@ -170,6 +179,13 @@ ROOT_CAUSE_MAP = {
 }
 
 RECOMMEND_MAP = {
+    "uvm_fatal": "Identify fatal source, check UVM fatal triggers, and confirm correct test termination behavior",
+    "uvm_error": "Trace UVM components: sequencer, driver, monitor, and check scoreboard comparisons",
+    "uvm_warning": "Review UVM warning text and investigate underlying protocol or coverage issues",
+    "uvm_phase_error": "Check phase transitions and objections; ensure phase callbacks are registered",
+    "uvm_sequence_error": "Review sequence constraints and arbitration; validate sequence item flow",
+    "uvm_scoreboard_mismatch": "Inspect scoreboard compare logs; verify predictors and reference model",
+    "sva_assertion_failure": "Validate assertion trigger signals and timing; check antecedent stability",
     "assertion_failure": "Inspect assertion conditions and triggering signals; validate channel ordering and ready/valid behavior",
     "timeout_error": "Check clock gating logic; verify handshake completion signals",
     "protocol_violation": "Review FSM state transitions; validate protocol sequencing",
@@ -191,6 +207,10 @@ class FeedbackItem(BaseModel):
 
 class PrioritizeRequest(BaseModel):
     feedback: List[FeedbackItem]
+
+
+class FailureStatusUpdate(BaseModel):
+    status: str
 
 
 def _read_upload(upload: UploadFile) -> str:
@@ -235,8 +255,9 @@ def _publish_upload_job(job_id: int) -> None:
 def _health_score(total: int, unique: int) -> float:
     if total == 0:
         return 100.0
-    score = 100.0 - (unique / total * 100.0)
-    return round(max(score, 0.0), 2)
+    duplicates = max(total - unique, 0)
+    score = (duplicates / total) * 100.0
+    return round(score, 2)
 
 
 def _to_dataframe(failures: List[Dict]) -> pd.DataFrame:
@@ -461,27 +482,43 @@ def get_dashboard(
     df = pd.DataFrame([{
         "id": f["_id"],
         "timestamp": f.get("timestamp"),
+        "sim_time": f.get("sim_time"),
         "severity": f.get("severity"),
+        "severity_raw": f.get("severity_raw"),
+        "failure_type": f.get("failure_type"),
         "module": f.get("module"),
         "line_no": f.get("line_no"),
         "message": f.get("message"),
         "context": f.get("context"),
+        "test_name": f.get("test_name"),
+        "seed": f.get("seed"),
+        "dut_path": f.get("dut_path"),
+        "uvm_phase": f.get("uvm_phase"),
+        "source_file": f.get("source_file"),
+        "source_line": f.get("source_line"),
         "category": f.get("category"),
         "cluster_id": f.get("cluster_id"),
         "priority_score": f.get("priority_score"),
         "is_duplicate": f.get("is_duplicate"),
         "unique_failure_id": f.get("unique_failure_id"),
+        "status": f.get("status"),
+        "first_seen_run_id": f.get("first_seen_run_id"),
+        "last_seen_run_id": f.get("last_seen_run_id"),
+        "first_seen_at": f.get("first_seen_at"),
+        "last_seen_at": f.get("last_seen_at"),
+        "closed_at": f.get("closed_at"),
     } for f in failures])
 
-    category_distribution = (
-        df["category"].value_counts().reset_index().rename(columns={"index": "category", "category": "count"})
-        .to_dict(orient="records")
-    )
+    # Use explicit counting to ensure label fields are always present.
+    category_counts = df["category"].value_counts().to_dict()
+    category_distribution = [
+        {"category": key, "count": int(val)} for key, val in category_counts.items()
+    ]
 
-    module_hotspots = (
-        df["module"].value_counts().reset_index().rename(columns={"index": "module", "module": "count"})
-        .to_dict(orient="records")
-    )
+    module_counts = df["module"].value_counts().to_dict()
+    module_hotspots = [
+        {"module": key, "count": int(val)} for key, val in module_counts.items()
+    ]
 
     freq_map = df["unique_failure_id"].value_counts().to_dict()
 
@@ -520,6 +557,44 @@ def get_dashboard(
         }
         for _, row in df.iterrows()
     ]
+
+    new_failure_count = int((df["first_seen_run_id"] == run_id).sum()) if "first_seen_run_id" in df else 0
+    known_failure_count = max(int(len(df) - new_failure_count), 0)
+    recurrence_rate = round((known_failure_count / len(df)) * 100.0, 2) if len(df) else 0.0
+
+    if "closed_at" in df and "first_seen_at" in df:
+        df["closed_at"] = pd.to_datetime(df["closed_at"], errors="coerce")
+        df["first_seen_at"] = pd.to_datetime(df["first_seen_at"], errors="coerce")
+        closed_rows = df[df["closed_at"].notna() & df["first_seen_at"].notna()]
+    else:
+        closed_rows = pd.DataFrame()
+    if not closed_rows.empty:
+        durations = (closed_rows["closed_at"] - closed_rows["first_seen_at"]).dt.total_seconds() / 3600.0
+        mttr_hours = round(float(durations.mean()), 2)
+    else:
+        mttr_hours = None
+
+    status_breakdown = (
+        df["status"].fillna("open").value_counts().reset_index().rename(columns={"index": "status", "status": "count"})
+        .to_dict(orient="records")
+    )
+
+    trend_vs_prev_run = None
+    all_runs = get_runs(user_id=user["user_id"])
+    prev = None
+    for idx, r in enumerate(all_runs):
+        if r["_id"] == run_id and idx + 1 < len(all_runs):
+            prev = all_runs[idx + 1]
+            break
+    if prev:
+        prev_score = prev.get("health_score", 0)
+        curr_score = run.get("health_score", 0)
+        if curr_score > prev_score:
+            trend_vs_prev_run = "improving"
+        elif curr_score < prev_score:
+            trend_vs_prev_run = "regressing"
+        else:
+            trend_vs_prev_run = "stable"
 
     coords_available = all(
         f.get("cluster_x") is not None and f.get("cluster_y") is not None for f in failures
@@ -567,6 +642,12 @@ def get_dashboard(
         "failure_timeline": failure_timeline,
         "root_cause_suggestions": root_cause_suggestions,
         "debug_recommendations": debug_recommendations,
+        "new_failure_count": new_failure_count,
+        "known_failure_count": known_failure_count,
+        "recurrence_rate": recurrence_rate,
+        "mttr_hours": mttr_hours,
+        "status_breakdown": status_breakdown,
+        "trend_vs_prev_run": trend_vs_prev_run,
     }
 
 
@@ -592,11 +673,20 @@ def get_failures(
         {
             "id": f["_id"],
             "timestamp": f.get("timestamp"),
+            "sim_time": f.get("sim_time"),
             "severity": f.get("severity"),
+            "severity_raw": f.get("severity_raw"),
+            "failure_type": f.get("failure_type"),
             "module": f.get("module"),
             "line_no": f.get("line_no"),
             "message": f.get("message"),
             "context": f.get("context"),
+            "test_name": f.get("test_name"),
+            "seed": f.get("seed"),
+            "dut_path": f.get("dut_path"),
+            "uvm_phase": f.get("uvm_phase"),
+            "source_file": f.get("source_file"),
+            "source_line": f.get("source_line"),
             "category": f.get("category"),
             "cluster_id": f.get("cluster_id"),
             "cluster_x": f.get("cluster_x"),
@@ -604,9 +694,39 @@ def get_failures(
             "priority_score": f.get("priority_score"),
             "is_duplicate": f.get("is_duplicate"),
             "unique_failure_id": f.get("unique_failure_id"),
+            "status": f.get("status"),
+            "first_seen_run_id": f.get("first_seen_run_id"),
+            "last_seen_run_id": f.get("last_seen_run_id"),
+            "first_seen_at": f.get("first_seen_at"),
+            "last_seen_at": f.get("last_seen_at"),
+            "closed_at": f.get("closed_at"),
         }
         for f in failures
     ]
+
+
+@app.patch("/failure/{failure_id}/status")
+@limiter.limit("60/minute")
+def update_failure_status_api(
+    request: Request,
+    failure_id: int,
+    payload: FailureStatusUpdate,
+    user: str = Depends(get_current_user),
+):
+    status_val = payload.status.strip().lower()
+    allowed = {"open", "investigating", "closed", "wontfix"}
+    if status_val not in allowed:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    existing = get_failure_by_id(failure_id, user_id=user["user_id"])
+    if not existing:
+        raise HTTPException(status_code=404, detail="Failure not found")
+    updated = update_failure_status(failure_id, status_val, user_id=user["user_id"])
+    return {
+        "id": updated["_id"],
+        "status": updated.get("status"),
+        "status_updated_at": updated.get("status_updated_at"),
+        "closed_at": updated.get("closed_at"),
+    }
 
 
 @app.get("/runs")
@@ -636,6 +756,46 @@ def list_runs(
         }
         for r in runs
     ]
+
+
+@app.get("/compare-runs")
+@limiter.limit("40/minute")
+def compare_runs(
+    request: Request,
+    run_a: int,
+    run_b: int,
+    user: str = Depends(get_current_user),
+):
+    run_a_doc = get_run(run_a, user_id=user["user_id"])
+    run_b_doc = get_run(run_b, user_id=user["user_id"])
+    if not run_a_doc or not run_b_doc:
+        raise HTTPException(status_code=404, detail="Run not found")
+    fails_a = get_failures_by_run(run_a)
+    fails_b = get_failures_by_run(run_b)
+    sig_a = {f.get("signature") for f in fails_a if f.get("signature")}
+    sig_b = {f.get("signature") for f in fails_b if f.get("signature")}
+
+    recurring = sig_a.intersection(sig_b)
+    new_in_b = sig_b.difference(sig_a)
+    resolved_in_b = sig_a.difference(sig_b)
+
+    return {
+        "run_a": run_a,
+        "run_b": run_b,
+        "recurring_count": len(recurring),
+        "new_in_b_count": len(new_in_b),
+        "resolved_in_b_count": len(resolved_in_b),
+        "run_a_totals": {
+            "total_failures": run_a_doc.get("total_failures"),
+            "unique_failures": run_a_doc.get("unique_failures"),
+            "health_score": run_a_doc.get("health_score"),
+        },
+        "run_b_totals": {
+            "total_failures": run_b_doc.get("total_failures"),
+            "unique_failures": run_b_doc.get("unique_failures"),
+            "health_score": run_b_doc.get("health_score"),
+        },
+    }
 
 
 @app.delete("/run/{run_id}")
@@ -670,15 +830,30 @@ def export_report(
 
     df = pd.DataFrame([{
         "timestamp": f.get("timestamp"),
+        "sim_time": f.get("sim_time"),
         "severity": f.get("severity"),
+        "severity_raw": f.get("severity_raw"),
+        "failure_type": f.get("failure_type"),
         "module": f.get("module"),
         "line_no": f.get("line_no"),
         "message": f.get("message"),
+        "test_name": f.get("test_name"),
+        "seed": f.get("seed"),
+        "dut_path": f.get("dut_path"),
+        "uvm_phase": f.get("uvm_phase"),
+        "source_file": f.get("source_file"),
+        "source_line": f.get("source_line"),
         "category": f.get("category"),
         "cluster_id": f.get("cluster_id"),
         "priority_score": f.get("priority_score"),
         "is_duplicate": f.get("is_duplicate"),
         "unique_failure_id": f.get("unique_failure_id"),
+        "status": f.get("status"),
+        "first_seen_run_id": f.get("first_seen_run_id"),
+        "last_seen_run_id": f.get("last_seen_run_id"),
+        "first_seen_at": f.get("first_seen_at"),
+        "last_seen_at": f.get("last_seen_at"),
+        "closed_at": f.get("closed_at"),
     } for f in failures])
 
     buffer = io.StringIO()

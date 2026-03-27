@@ -43,6 +43,8 @@ export const getRootCause = (runId, failureId) =>
 export const getExplanation = (runId, failureId) =>
   client.get(`/explain/${runId}/${failureId}`);
 export const logout = () => client.post(`/logout`);
+export const updateFailureStatus = (failureId, status) =>
+  client.patch(`/failure/${failureId}/status`, { status });
 
 export const login = async (username, password) => {
   const body = new URLSearchParams();

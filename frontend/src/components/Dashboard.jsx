@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { getDashboard, getFailures, exportCSV, uploadLog, getExplanation, getRuns, logout } from "../api/api";
+import { getDashboard, getFailures, exportCSV, uploadLog, getExplanation, getRuns, logout, updateFailureStatus } from "../api/api";
 import HealthScore from "./HealthScore";
 import CategoryDistribution from "./CategoryDistribution";
 import FailurePriorityTable from "./FailurePriorityTable";
@@ -22,6 +22,7 @@ const Dashboard = () => {
   const [shapImportance, setShapImportance] = useState(null);
   const [explainLoading, setExplainLoading] = useState(false);
   const [graphMode, setGraphMode] = useState("cluster");
+  const [statusUpdating, setStatusUpdating] = useState(false);
 
   const [runs, setRuns] = useState([]);
   const [runsLoading, setRunsLoading] = useState(false);
@@ -42,6 +43,12 @@ const Dashboard = () => {
         failure_timeline: [],
         root_cause_suggestions: [],
         debug_recommendations: [],
+        new_failure_count: 0,
+        known_failure_count: 0,
+        recurrence_rate: 0,
+        mttr_hours: null,
+        status_breakdown: [],
+        trend_vs_prev_run: null,
       });
       setFailures([]);
       setSelected(null);
@@ -151,6 +158,7 @@ const Dashboard = () => {
 
   const suggestion = dashboard.root_cause_suggestions.find((s) => s.failure_id === selected?.id)?.suggestion;
   const recommendation = dashboard.debug_recommendations.find((r) => r.failure_id === selected?.id)?.recommendation;
+  const statusOptions = ["open", "investigating", "closed", "wontfix"];
 
   const severities = ["INFO", "WARNING", "ERROR", "FATAL"];
   const modules = [...new Set(failures.map((f) => f.module))];
@@ -309,6 +317,31 @@ const Dashboard = () => {
           </div>
         </section>
 
+        <section className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+          <div className="glass rounded-xl p-4 card-glow">
+            <div className="text-xs text-slate-400">New vs Known</div>
+            <div className="text-xl font-semibold mt-2">
+              {dashboard.new_failure_count} new / {dashboard.known_failure_count} known
+            </div>
+          </div>
+          <div className="glass rounded-xl p-4 card-glow">
+            <div className="text-xs text-slate-400">Recurrence Rate</div>
+            <div className="text-2xl font-semibold mt-2">{dashboard.recurrence_rate}%</div>
+          </div>
+          <div className="glass rounded-xl p-4 card-glow">
+            <div className="text-xs text-slate-400">MTTR Estimate</div>
+            <div className="text-2xl font-semibold mt-2">
+              {dashboard.mttr_hours == null ? "—" : `${dashboard.mttr_hours}h`}
+            </div>
+          </div>
+          <div className="glass rounded-xl p-4 card-glow">
+            <div className="text-xs text-slate-400">Trend vs Prev Run</div>
+            <div className="text-2xl font-semibold mt-2 capitalize">
+              {dashboard.trend_vs_prev_run || "—"}
+            </div>
+          </div>
+        </section>
+
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
           <CategoryDistribution data={dashboard.category_distribution} />
           <ModuleHotspot data={dashboard.module_hotspots} />
@@ -325,7 +358,71 @@ const Dashboard = () => {
             <div className="text-xs text-slate-400 mb-2">Selected Failure</div>
             <div className="text-lg font-semibold mb-2">{selected?.module || "-"}</div>
             <div className="text-sm text-slate-300 mb-1">{selected?.category || "-"}</div>
+            <div className="text-xs text-slate-500">
+              {selected?.failure_type || "LOG"} · {selected?.severity_raw || selected?.severity || "-"}
+            </div>
+            {selected?.uvm_phase && (
+              <div className="text-xs text-slate-500 mt-1">Phase: {selected.uvm_phase}</div>
+            )}
             <div className="text-xs text-slate-500">{selected?.message || "Select a failure to inspect."}</div>
+            {selected?.test_name && (
+              <div className="text-xs text-slate-500 mt-2">Test: {selected.test_name}</div>
+            )}
+            {selected?.seed && (
+              <div className="text-xs text-slate-500">Seed: {selected.seed}</div>
+            )}
+            {selected?.dut_path && (
+              <div className="text-xs text-slate-500">DUT: {selected.dut_path}</div>
+            )}
+            {selected?.sim_time && (
+              <div className="text-xs text-slate-500">Sim Time: {selected.sim_time}</div>
+            )}
+            <div className="mt-3">
+              <div className="text-xs text-slate-400 mb-2">Debug Status</div>
+              <div className="flex items-center gap-2">
+                <select
+                  className="bg-slate-900/60 border border-slate-700 text-xs text-slate-200 rounded px-2 py-1"
+                  value={selected?.status || "open"}
+                  disabled={!selected || statusUpdating}
+                  onChange={async (e) => {
+                    if (!selected?.id) return;
+                    const newStatus = e.target.value;
+                    try {
+                      setStatusUpdating(true);
+                      await updateFailureStatus(selected.id, newStatus);
+                      const nextFailures = failures.map((f) =>
+                        f.id === selected.id ? { ...f, status: newStatus } : f
+                      );
+                      setFailures(nextFailures);
+                      setSelected({ ...selected, status: newStatus });
+                      const statusCounts = nextFailures.reduce((acc, f) => {
+                        const key = f.status || "open";
+                        acc[key] = (acc[key] || 0) + 1;
+                        return acc;
+                      }, {});
+                      setDashboard({
+                        ...dashboard,
+                        status_breakdown: Object.entries(statusCounts).map(([status, count]) => ({
+                          status,
+                          count,
+                        })),
+                      });
+                    } finally {
+                      setStatusUpdating(false);
+                    }
+                  }}
+                >
+                  {statusOptions.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+                {statusUpdating && (
+                  <span className="text-[11px] text-slate-500">Updating...</span>
+                )}
+              </div>
+            </div>
             {selected?.context && (
               <div className="mt-3">
                 <div className="text-xs text-slate-400 mb-2">Log Context</div>

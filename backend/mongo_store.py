@@ -51,9 +51,11 @@ def init_mongo() -> None:
     db["users"].create_index([("username", ASCENDING)], unique=True)
     db["runs"].create_index([("user_id", ASCENDING), ("uploaded_at", ASCENDING)])
     db["failures"].create_index([("run_id", ASCENDING)])
+    db["failures"].create_index([("user_id", ASCENDING), ("signature", ASCENDING)])
     db["upload_jobs"].create_index([("user_id", ASCENDING), ("created_at", ASCENDING)])
     db["revoked_tokens"].create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
-    db["settings"].create_index([("_id", ASCENDING)], unique=True)
+    # `_id` is inherently unique in MongoDB; do not set unique on _id index.
+    db["settings"].create_index([("_id", ASCENDING)])
 
 
 # Users
@@ -103,22 +105,51 @@ def create_run(
     return doc
 
 
-def add_failures(run_id: int, failures: List[dict]) -> None:
+def add_failures(
+    run_id: int,
+    failures: List[dict],
+    *,
+    user_id: int | None = None,
+    run_uploaded_at: datetime | None = None,
+) -> None:
     if not failures:
         return
+    if run_uploaded_at is None:
+        run_uploaded_at = datetime.utcnow()
     docs = []
     for f in failures:
         fail_id = _next_id("failures")
+        signature = f.get("signature")
+        first_seen_run_id = run_id
+        first_seen_at = run_uploaded_at
+        if signature and user_id is not None:
+            existing = _db()["failures"].find_one(
+                {"signature": signature, "user_id": user_id},
+                sort=[("run_id", -1)],
+            )
+            if existing:
+                first_seen_run_id = existing.get("first_seen_run_id", existing.get("run_id", run_id))
+                first_seen_at = existing.get("first_seen_at", first_seen_at)
         docs.append(
             {
                 "_id": fail_id,
                 "run_id": run_id,
+                "user_id": user_id,
                 "timestamp": f.get("timestamp"),
+                "sim_time": f.get("sim_time"),
                 "severity": f.get("severity"),
+                "severity_raw": f.get("severity_raw", f.get("severity")),
+                "failure_type": f.get("failure_type"),
                 "module": f.get("module"),
                 "line_no": f.get("line_no"),
                 "message": f.get("message"),
                 "context": f.get("context"),
+                "test_name": f.get("test_name"),
+                "seed": f.get("seed"),
+                "dut_path": f.get("dut_path"),
+                "uvm_phase": f.get("uvm_phase"),
+                "source_file": f.get("source_file"),
+                "source_line": f.get("source_line"),
                 "category": f.get("category"),
                 "cluster_id": f.get("cluster_id"),
                 "cluster_x": f.get("cluster_x"),
@@ -126,9 +157,45 @@ def add_failures(run_id: int, failures: List[dict]) -> None:
                 "priority_score": f.get("priority_score"),
                 "is_duplicate": f.get("is_duplicate"),
                 "unique_failure_id": f.get("unique_failure_id"),
+                "signature": signature,
+                "first_seen_run_id": first_seen_run_id,
+                "last_seen_run_id": run_id,
+                "first_seen_at": first_seen_at,
+                "last_seen_at": run_uploaded_at,
+                "status": "open",
+                "status_updated_at": run_uploaded_at,
+                "closed_at": None,
             }
         )
     _db()["failures"].insert_many(docs)
+
+
+def update_failure_status(
+    failure_id: int,
+    status: str,
+    *,
+    user_id: int | None = None,
+) -> Optional[Dict]:
+    q = {"_id": failure_id}
+    if user_id is not None:
+        q["user_id"] = user_id
+    update: Dict = {"status": status, "status_updated_at": datetime.utcnow()}
+    if status == "closed":
+        update["closed_at"] = datetime.utcnow()
+    elif status != "closed":
+        update["closed_at"] = None
+    return _db()["failures"].find_one_and_update(
+        q,
+        {"$set": update},
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+def get_failure_by_id(failure_id: int, *, user_id: int | None = None) -> Optional[Dict]:
+    q = {"_id": failure_id}
+    if user_id is not None:
+        q["user_id"] = user_id
+    return _db()["failures"].find_one(q)
 
 
 def get_run(run_id: int, *, user_id: int | None = None) -> Optional[Dict]:

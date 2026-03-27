@@ -4,11 +4,8 @@ sqlalchemy
 pandas
 numpy
 scikit-learn
-sentence-transformers
-torch
 python-multipart
 pydantic
-transformers
 datasketch
 optuna
 shap

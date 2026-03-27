@@ -20,19 +20,20 @@ const App = () => (
     }}
   >
     <Routes>
-      <Route
-        path="/"
-        element={
-          <RequireAuth>
-            <Dashboard />
-          </RequireAuth>
-        }
-      />
+      <Route path="/" element={<Navigate to="/login" replace />} />
       <Route
         path="/upload"
         element={
           <RequireAuth>
             <LogUpload />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/dashboard"
+        element={
+          <RequireAuth>
+            <Dashboard />
           </RequireAuth>
         }
       />
