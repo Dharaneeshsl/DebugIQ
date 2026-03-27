@@ -28,6 +28,26 @@ def _build_retrieval_corpus() -> List[Dict[str, str]]:
     """
     return [
         {
+            "category": "uvm_fatal",
+            "content": "UVM fatal errors usually stop the test; inspect fatal calls, phase objections, and termination conditions.",
+        },
+        {
+            "category": "uvm_scoreboard_mismatch",
+            "content": "Scoreboard mismatches indicate divergence between expected and actual transactions; validate predictors and compare hooks.",
+        },
+        {
+            "category": "uvm_phase_error",
+            "content": "Phase errors often come from incorrect build/connect/run ordering or missing objection handling.",
+        },
+        {
+            "category": "uvm_sequence_error",
+            "content": "Sequence errors often involve sequencer arbitration or invalid sequence item constraints.",
+        },
+        {
+            "category": "sva_assertion_failure",
+            "content": "SVA assertion failures point to violated temporal properties; inspect antecedent signal stability and timing windows.",
+        },
+        {
             "category": "protocol_violation",
             "content": "Protocol sequencing issues usually start from invalid FSM transition, dropped ready/valid handshake, or stale transaction IDs.",
         },

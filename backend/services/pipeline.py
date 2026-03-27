@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Dict
+import hashlib
 
 from parser import parse_logs
 from preprocessor import preprocess_records
@@ -49,6 +50,8 @@ def process_log_text(text: str, filename: str, *, user_id: int | None = None) ->
     failures = []
     for idx, p in enumerate(parsed):
         point = cluster_point_map.get(idx, {})
+        signature_source = f"{categories[idx]}|{preprocessed[idx]}"
+        signature = hashlib.sha1(signature_source.encode("utf-8")).hexdigest()
         failures.append(
             {
                 **p,
@@ -59,6 +62,7 @@ def process_log_text(text: str, filename: str, *, user_id: int | None = None) ->
                 "priority_score": scores[idx],
                 "is_duplicate": bool(is_duplicate[idx]),
                 "unique_failure_id": unique_ids[idx],
+                "signature": signature,
             }
         )
 
@@ -66,15 +70,16 @@ def process_log_text(text: str, filename: str, *, user_id: int | None = None) ->
     unique = len(set(unique_ids)) if unique_ids else 0
     critical = sum(1 for f in failures if f["severity"] == "FATAL")
 
-    # Regression health: penalize duplicates; keep it simple for v1
+    # Regression health: higher score when duplicates dominate (fewer uniques).
     if total == 0:
         health = 100.0
     else:
-        health = round(max(100.0 - (unique / total * 100.0), 0.0), 2)
+        duplicates = max(total - unique, 0)
+        health = round((duplicates / total) * 100.0, 2)
 
     run = create_run(filename, total, unique, critical, health, user_id=user_id)
     run_id = run["_id"]
-    add_failures(run_id, failures)
+    add_failures(run_id, failures, user_id=user_id, run_uploaded_at=run["uploaded_at"])
 
     return {
         "run_id": run_id,

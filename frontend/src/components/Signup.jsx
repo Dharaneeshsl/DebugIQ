@@ -14,7 +14,7 @@ const Signup = () => {
   useEffect(() => {
     const token = localStorage.getItem("debugiq_token");
     if (token) {
-      navigate("/");
+      navigate("/dashboard");
       return;
     }
     const load = async () => {
@@ -37,7 +37,7 @@ const Signup = () => {
     setLoading(true);
     try {
       await signup(username, password, role);
-      navigate("/");
+      navigate("/dashboard");
     } catch (err) {
       setError(err?.response?.data?.detail || "Sign up failed");
     } finally {

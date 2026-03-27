@@ -30,7 +30,7 @@ jobs:
 
       - name: Import check
         run: |
-          python -m py_compile backend/main.py backend/parser.py backend/preprocessor.py backend/categorizer.py backend/deduplicator.py backend/clusterer.py backend/scorer.py backend/database.py backend/schemas.py
+          python -m py_compile backend/main.py backend/parser.py backend/preprocessor.py backend/categorizer.py backend/deduplicator.py backend/clusterer.py backend/scorer.py backend/mongo_store.py backend/auth_utils.py backend/services/pipeline.py backend/worker.py backend/ml/explainability.py
 
       - name: Tests
         run: |

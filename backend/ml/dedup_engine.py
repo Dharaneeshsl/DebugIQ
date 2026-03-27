@@ -4,7 +4,6 @@ from typing import List, Tuple
 import numpy as np
 
 from ml.lsh_deduplicator import FastDeduplicator
-from ml.siamese_network import SiameseNetwork
 from nlp.embeddings import generate_embeddings, EmbeddingConfig
 
 
@@ -26,7 +25,14 @@ class DedupEngine:
     def __init__(self, config: DedupConfig | None = None):
         self.config = config or DedupConfig()
         self.lsh = FastDeduplicator(threshold=self.config.lsh_threshold)
-        self.siamese = SiameseNetwork() if self.config.use_siamese else None
+        self.siamese = None
+        if self.config.use_siamese:
+            try:
+                from ml.siamese_network import SiameseNetwork
+                self.siamese = SiameseNetwork()
+            except Exception:
+                # Keep runtime resilient when torch is unavailable.
+                self.siamese = None
 
     def _cosine_sim(self, a: np.ndarray, b: np.ndarray) -> float:
         denom = float(np.linalg.norm(a) * np.linalg.norm(b))
