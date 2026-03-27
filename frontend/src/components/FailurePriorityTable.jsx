@@ -7,13 +7,87 @@ const severityColors = {
   INFO: "bg-slate-500/20 text-slate-200 border border-slate-500/40",
 };
 
-const FailurePriorityTable = ({ data, onSelect }) => {
+const FailurePriorityTable = ({ data, failures = [], onSelect }) => {
   const [severityFilter, setSeverityFilter] = useState("ALL");
   const [moduleFilter, setModuleFilter] = useState("ALL");
 
-  const modules = useMemo(() => Array.from(new Set(data.map(d => d.module))), [data]);
+  const invalidModuleTokens = new Set([
+    "FATAL",
+    "ERROR",
+    "WARNING",
+    "INFO",
+    "CRITICAL",
+    "UVM_FATAL",
+    "UVM_ERROR",
+    "UVM_WARNING",
+    "UVM_INFO",
+  ]);
 
-  const filtered = data.filter(d => {
+  const normalized = useMemo(() => {
+    const componentPattern = /\b([A-Za-z0-9_]+_(?:DRIVER|MONITOR|SCOREBOARD|AGENT|SEQUENCER)|(?:DRIVER|MONITOR|SCOREBOARD|AGENT|SEQUENCER)_[A-Za-z0-9_]+)\b/i;
+    const tokenPattern = /\b([A-Z_]{3,})\b/g;
+    const ignoreTokens = new Set([
+      ...invalidModuleTokens,
+      "LOG",
+      "LINE",
+      "FAILED",
+      "FAILURE",
+      "ASSERTION",
+      "RESULT",
+      "FLAGS",
+      "REQUEST",
+      "START",
+      "STOP",
+      "TIME",
+      "TEST",
+      "DUT",
+      "FILE",
+      "PATH",
+      "UPLOAD",
+      "ERRORS",
+    ]);
+
+    const representativeByUnique = new Map();
+    for (const f of failures) {
+      const key = f.unique_failure_id;
+      if (key == null || representativeByUnique.has(key)) continue;
+      representativeByUnique.set(key, f);
+    }
+
+    const normalizeModuleDisplay = (row) => {
+      const rep = representativeByUnique.get(row.unique_failure_id) || row;
+      const moduleText = String(rep.module || row.module || "").trim().toUpperCase();
+      if (moduleText && !invalidModuleTokens.has(moduleText)) {
+        return moduleText;
+      }
+      // Fallback to parsing module-like tokens from the raw log message/context.
+      const sourceText = `${rep.message || row.message || ""} ${rep.context || row.context || ""}`.toUpperCase();
+      const comp = sourceText.match(componentPattern);
+      if (comp?.[1]) return comp[1].toUpperCase();
+      const matches = sourceText.match(tokenPattern) || [];
+      for (const tok of matches) {
+        if (!ignoreTokens.has(tok)) return tok;
+      }
+      return "UNKNOWN_MOD";
+    };
+
+    // Keep one row per unique failure signature for a cleaner triage table.
+    const byUnique = new Map();
+    for (const row of data) {
+      const key = row.unique_failure_id ?? `${row.module}-${row.category}-${row.severity}`;
+      if (!byUnique.has(key)) {
+        byUnique.set(key, {
+          ...row,
+          module: normalizeModuleDisplay(row),
+        });
+      }
+    }
+    return Array.from(byUnique.values()).map((row, idx) => ({ ...row, rank: idx + 1 }));
+  }, [data, failures]);
+
+  const modules = useMemo(() => Array.from(new Set(normalized.map(d => d.module))), [normalized]);
+
+  const filtered = normalized.filter(d => {
     if (severityFilter !== "ALL" && d.severity !== severityFilter) return false;
     if (moduleFilter !== "ALL" && d.module !== moduleFilter) return false;
     return true;

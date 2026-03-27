@@ -17,8 +17,15 @@ const FailureTimeline = ({ data }) => (
       {data?.length ? (
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data}>
-            <XAxis dataKey="time" stroke="#94a3b8" fontSize={11} tickFormatter={formatTime} />
-            <YAxis stroke="#94a3b8" fontSize={11} />
+            <XAxis
+              dataKey="time"
+              stroke="#94a3b8"
+              fontSize={11}
+              tickFormatter={formatTime}
+              interval="preserveStartEnd"
+              minTickGap={28}
+            />
+            <YAxis stroke="#94a3b8" fontSize={11} allowDecimals={false} />
             <Tooltip />
             <Line type="monotone" dataKey="count" stroke="#eab308" strokeWidth={2} dot={false} />
           </LineChart>

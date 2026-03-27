@@ -176,26 +176,33 @@ def update_failure_status(
     *,
     user_id: int | None = None,
 ) -> Optional[Dict]:
-    q = {"_id": failure_id}
-    if user_id is not None:
-        q["user_id"] = user_id
+    # Caller must authorize via get_failure_by_id first. Match by _id only so
+    # legacy rows without user_id still update.
+    _ = user_id  # reserved for future audit fields
     update: Dict = {"status": status, "status_updated_at": datetime.utcnow()}
     if status == "closed":
         update["closed_at"] = datetime.utcnow()
     elif status != "closed":
         update["closed_at"] = None
     return _db()["failures"].find_one_and_update(
-        q,
+        {"_id": failure_id},
         {"$set": update},
         return_document=ReturnDocument.AFTER,
     )
 
 
 def get_failure_by_id(failure_id: int, *, user_id: int | None = None) -> Optional[Dict]:
-    q = {"_id": failure_id}
-    if user_id is not None:
-        q["user_id"] = user_id
-    return _db()["failures"].find_one(q)
+    f = _db()["failures"].find_one({"_id": failure_id})
+    if not f:
+        return None
+    if user_id is None:
+        return f
+    fu = f.get("user_id")
+    if fu is not None:
+        return f if fu == user_id else None
+    # Legacy documents without user_id: allow if the parent run belongs to this user.
+    run = _db()["runs"].find_one({"_id": f.get("run_id"), "user_id": user_id})
+    return f if run else None
 
 
 def get_run(run_id: int, *, user_id: int | None = None) -> Optional[Dict]:

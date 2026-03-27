@@ -54,6 +54,25 @@ def extract_failures(lines: List[str]) -> List[ExtractedFailure]:
     )
     sva_pattern = re.compile(r"\b(ASSERTION FAILED|SVA ERROR|SVA FAILURE|SVA ASSERTION)\b", re.IGNORECASE)
     mod_pattern = re.compile(r"\b([A-Z_]{3,})\b")
+    invalid_module_tokens = {
+        "FATAL",
+        "ERROR",
+        "WARNING",
+        "CRITICAL",
+        "INFO",
+        "UVM_FATAL",
+        "UVM_ERROR",
+        "UVM_WARNING",
+        "UVM_INFO",
+        "ASSERTION",
+        "FAILED",
+        "SVA",
+        "LOG",
+    }
+    verification_component_patterns = [
+        re.compile(r"\b([A-Za-z0-9_]+_(?:DRIVER|MONITOR|SCOREBOARD|AGENT|SEQUENCER))\b", re.IGNORECASE),
+        re.compile(r"\b((?:DRIVER|MONITOR|SCOREBOARD|AGENT|SEQUENCER)_[A-Za-z0-9_]+)\b", re.IGNORECASE),
+    ]
     time_pattern = re.compile(r"(\d{2}:\d{2}:\d{2}[\.,]\d+)")
     sim_time_pattern = re.compile(r"\[TIME:(\d+(?:\.\d+)?(?:ns|ps|us|ms))\]", re.IGNORECASE)
     phase_pattern = re.compile(r"\b(build_phase|connect_phase|run_phase|extract_phase|check_phase|report_phase)\b", re.IGNORECASE)
@@ -73,8 +92,22 @@ def extract_failures(lines: List[str]) -> List[ExtractedFailure]:
                 severity_raw = "SVA_ERROR" if "SVA" in line.upper() else "ASSERTION_FAILED"
                 severity = "ERROR"
             
-            mod_match = mod_pattern.search(line)
-            module = mod_match.group(1) if mod_match else "UNKNOWN_MOD"
+            module = "UNKNOWN_MOD"
+
+            # Prefer explicit verification component names when present.
+            for p in verification_component_patterns:
+                m = p.search(line)
+                if m:
+                    module = m.group(1).upper()
+                    break
+
+            if module == "UNKNOWN_MOD":
+                for m in mod_pattern.finditer(line):
+                    candidate = m.group(1).upper()
+                    if candidate in invalid_module_tokens:
+                        continue
+                    module = candidate
+                    break
             
             t_match = time_pattern.search(line)
             timestamp = t_match.group(1) if t_match else "00:00:00.000"

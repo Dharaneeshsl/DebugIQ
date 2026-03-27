@@ -21,8 +21,10 @@ const Dashboard = () => {
   const [explain, setExplain] = useState(null);
   const [shapImportance, setShapImportance] = useState(null);
   const [explainLoading, setExplainLoading] = useState(false);
+  const [explainError, setExplainError] = useState(null);
   const [graphMode, setGraphMode] = useState("cluster");
   const [statusUpdating, setStatusUpdating] = useState(false);
+  const [statusError, setStatusError] = useState(null);
 
   const [runs, setRuns] = useState([]);
   const [runsLoading, setRunsLoading] = useState(false);
@@ -106,16 +108,25 @@ const Dashboard = () => {
     if (!runId || !selected?.id) {
       setExplain(null);
       setShapImportance(null);
+      setExplainError(null);
       return;
     }
 
     let cancelled = false;
     const loadExplanation = async () => {
       setExplainLoading(true);
+      setExplainError(null);
       try {
         const res = await getExplanation(runId, selected.id);
         if (cancelled) return;
-        setExplain(res.data.llm_explanation);
+        let text = res.data.llm_explanation || "";
+        if (/^\[MOCK LLM\]/i.test(text)) {
+          setExplainError(
+            "This response came from an old build. Restart the backend with valid GROQ_KEY / OPENAI_API_KEY / GEMINI_API_KEY."
+          );
+          text = text.replace(/^\[MOCK LLM\]\s*/i, "").trim();
+        }
+        setExplain(text || null);
         setShapImportance(res.data.shap_importance);
       } catch (err) {
         if (err?.response?.status === 401) {
@@ -125,6 +136,10 @@ const Dashboard = () => {
         if (!cancelled) {
           setExplain(null);
           setShapImportance(null);
+          const detail = err?.response?.data?.detail;
+          setExplainError(
+            typeof detail === "string" ? detail : err?.message || "Explanation request failed"
+          );
         }
       } finally {
         if (!cancelled) setExplainLoading(false);
@@ -185,6 +200,14 @@ const Dashboard = () => {
       clusterHub.set(c, n.id);
     } else {
       clusterEdges.push({ source: clusterHub.get(c), target: n.id });
+    }
+  }
+  // Fallback: if every node is isolated in its own cluster, render a light chain
+  // so the cluster view is still visually interpretable.
+  if (clusterEdges.length === 0 && graphNodes.length > 1) {
+    const byCluster = [...graphNodes].sort((a, b) => (a.group ?? 0) - (b.group ?? 0));
+    for (let i = 1; i < byCluster.length; i++) {
+      clusterEdges.push({ source: byCluster[i - 1].id, target: byCluster[i].id });
     }
   }
 
@@ -356,7 +379,7 @@ const Dashboard = () => {
 
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
           <div className="lg:col-span-2">
-            <FailurePriorityTable data={dashboard.priority_ranking} onSelect={(row) => {
+            <FailurePriorityTable data={dashboard.priority_ranking} failures={failures} onSelect={(row) => {
               const match = failures.find((f) => f.unique_failure_id === row.unique_failure_id) || failures[0];
               setSelected(match);
             }} />
@@ -394,6 +417,7 @@ const Dashboard = () => {
                   onChange={async (e) => {
                     if (!selected?.id) return;
                     const newStatus = e.target.value;
+                    setStatusError(null);
                     try {
                       setStatusUpdating(true);
                       await updateFailureStatus(selected.id, newStatus);
@@ -414,6 +438,15 @@ const Dashboard = () => {
                           count,
                         })),
                       });
+                    } catch (err) {
+                      if (err?.response?.status === 401) {
+                        navigate("/login");
+                        return;
+                      }
+                      const detail = err?.response?.data?.detail;
+                      setStatusError(
+                        typeof detail === "string" ? detail : "Could not update status"
+                      );
                     } finally {
                       setStatusUpdating(false);
                     }
@@ -429,6 +462,9 @@ const Dashboard = () => {
                   <span className="text-[11px] text-slate-500">Updating...</span>
                 )}
               </div>
+              {statusError && (
+                <div className="text-[11px] text-red-400 mt-1">{statusError}</div>
+              )}
             </div>
             {selected?.context && (
               <div className="mt-3">
@@ -463,7 +499,10 @@ const Dashboard = () => {
                   )}
                 </>
               )}
-              {!explainLoading && !explain && (
+              {!explainLoading && explainError && (
+                <div className="text-[11px] text-amber-300/90 whitespace-pre-wrap">{explainError}</div>
+              )}
+              {!explainLoading && !explain && !explainError && (
                 <div className="text-xs text-slate-500">Explanation will appear here.</div>
               )}
             </div>

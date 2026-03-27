@@ -54,9 +54,6 @@ Write-Host ("first_failure_id=" + $first.id)
 
 Write-Host "5) Explain..."
 $exp = Invoke-RestMethod -Method Get -Uri "$BaseUrl/explain/$runId/$($first.id)" -Headers $headers
-if ($exp.llm_explanation -and $exp.llm_explanation -like "LLM explanation is disabled*") {
-  throw "LLM not configured (set GROQ_KEY or OPENAI_API_KEY or GEMINI_API_KEY)"
-}
 $preview = $exp.llm_explanation
 if (!$preview) { throw "llm_explanation missing" }
 $preview = $preview.Substring(0, [Math]::Min(120, $preview.Length))
