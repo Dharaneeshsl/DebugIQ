@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { login } from "../api/api";
 
@@ -8,11 +8,6 @@ const Login = () => {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-
-  useEffect(() => {
-    const token = localStorage.getItem("debugiq_token");
-    if (token) navigate("/dashboard");
-  }, []);
 
   const onSubmit = async (e) => {
     e.preventDefault();

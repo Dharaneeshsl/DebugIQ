@@ -123,7 +123,7 @@ Return:
     last_error = None
 
     # 1) Groq (primary, if configured)
-    groq_key = os.environ.get("GROQ_KEY")
+    groq_key = (os.environ.get("CHATBOT_API_KEY") or os.environ.get("GROQ_KEY") or "").strip()
     groq_base_url = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
     if groq_key and GroqClient is not None:
         has_provider_key = True
@@ -180,7 +180,69 @@ Return:
 
     if not has_provider_key:
         raise RuntimeError(
-            "No LLM provider key configured. Set one of: GROQ_KEY, OPENAI_API_KEY, GEMINI_API_KEY."
+            "No LLM provider key configured. Set one of: CHATBOT_API_KEY, GROQ_KEY, OPENAI_API_KEY, GEMINI_API_KEY."
+        )
+    raise RuntimeError(f"All configured LLM providers failed. Last error: {last_error}")
+
+
+def generate_llm_chat(messages: List[Dict[str, str]]) -> str:
+    """
+    Multi-turn chat completion using the same provider stack as generate_llm_explanation.
+    `messages` items must be dicts with keys role and content (OpenAI-style).
+    """
+    if not messages:
+        raise ValueError("messages must be non-empty")
+
+    has_provider_key = False
+    last_error = None
+
+    groq_key = (os.environ.get("CHATBOT_API_KEY") or os.environ.get("GROQ_KEY") or "").strip()
+    groq_base_url = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+    if groq_key and GroqClient is not None:
+        has_provider_key = True
+        try:
+            groq_model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+            groq = GroqClient(api_key=groq_key, base_url=groq_base_url)
+            resp = groq.chat.completions.create(
+                model=groq_model,
+                messages=messages,
+                temperature=0.2,
+            )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception as exc:
+            last_error = exc
+
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if openai_key and OpenAI is not None:
+        has_provider_key = True
+        try:
+            base_url = os.environ.get("OPENAI_BASE_URL")
+            client = OpenAI(api_key=openai_key, base_url=base_url) if base_url else OpenAI(api_key=openai_key)
+            model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.2,
+            )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception as exc:
+            last_error = exc
+
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_key and genai is not None:
+        has_provider_key = True
+        try:
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            prompt = "\n".join(f"{m.get('role', 'user').upper()}: {m.get('content', '')}" for m in messages)
+            response = model.generate_content(prompt)
+            return (response.text or "").strip()
+        except Exception as exc:
+            last_error = exc
+
+    if not has_provider_key:
+        raise RuntimeError(
+            "No LLM provider key configured. Set one of: CHATBOT_API_KEY, GROQ_KEY, OPENAI_API_KEY, GEMINI_API_KEY."
         )
     raise RuntimeError(f"All configured LLM providers failed. Last error: {last_error}")
 

@@ -1,4 +1,7 @@
 from typing import List
+import logging
+import os
+
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -38,8 +41,24 @@ KEYWORDS = {
     "memory_error": ["ecc", "decode", "address", "memory"],
 }
 
+logger = logging.getLogger(__name__)
 _model = None
 _label_embeddings = None
+_tfidf_skip_logged = False
+
+
+def _force_tfidf_semantic_categorization() -> bool:
+    """Match nlp/embeddings.py: skip sentence-transformers when offline/fast path requested."""
+    b = os.environ.get("DEBUGIQ_EMBEDDINGS_BACKEND", "").strip().lower()
+    return b in {"tfidf", "hash"}
+
+
+def _categorize_tfidf_semantic(message: str) -> str:
+    corpus = CATEGORIES + [message]
+    vec = TfidfVectorizer(ngram_range=(1, 2))
+    mat = vec.fit_transform(corpus)
+    sims = cosine_similarity(mat[-1], mat[:-1])[0]
+    return CATEGORIES[int(np.argmax(sims))]
 
 
 def _get_model() -> SentenceTransformer:
@@ -64,6 +83,14 @@ def categorize_message(message: str) -> str:
     for category, keys in KEYWORDS.items():
         if any(k in lowered for k in keys):
             return category
+    if _force_tfidf_semantic_categorization():
+        global _tfidf_skip_logged
+        if not _tfidf_skip_logged:
+            logger.warning(
+                "DEBUGIQ_EMBEDDINGS_BACKEND=tfidf (or hash); categorizer uses TF-IDF only — not loading MiniLM."
+            )
+            _tfidf_skip_logged = True
+        return _categorize_tfidf_semantic(message)
     try:
         model = _get_model()
         label_embeddings = _get_label_embeddings()
@@ -71,12 +98,7 @@ def categorize_message(message: str) -> str:
         scores = np.dot(label_embeddings, msg_emb)
         return CATEGORIES[int(np.argmax(scores))]
     except Exception:
-        # Lightweight semantic fallback with TF-IDF cosine.
-        corpus = CATEGORIES + [message]
-        vec = TfidfVectorizer(ngram_range=(1, 2))
-        mat = vec.fit_transform(corpus)
-        sims = cosine_similarity(mat[-1], mat[:-1])[0]
-        return CATEGORIES[int(np.argmax(sims))]
+        return _categorize_tfidf_semantic(message)
 
 
 def categorize_messages(messages: List[str]) -> List[str]:

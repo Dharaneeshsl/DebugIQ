@@ -5,6 +5,7 @@ from typing import List, Dict, Optional
 from pathlib import Path
 import io
 import gzip
+import re
 import pandas as pd
 from pydantic import BaseModel
 from sklearn.decomposition import PCA
@@ -30,6 +31,7 @@ from mongo_store import (
     get_runs,
     get_failures_by_run,
     delete_run,
+    delete_all_runs_for_user,
     get_history_counts,
     create_upload_job,
     get_upload_job,
@@ -213,6 +215,16 @@ class FailureStatusUpdate(BaseModel):
     status: str
 
 
+class RunChatTurn(BaseModel):
+    role: str
+    content: str
+
+
+class RunChatRequest(BaseModel):
+    message: str
+    history: List[RunChatTurn] = []
+
+
 def _read_upload(upload: UploadFile) -> str:
     if not upload.filename:
         raise HTTPException(status_code=400, detail="No file provided")
@@ -375,6 +387,214 @@ def api_explain(
     }
 
 
+def _run_ids_mentioned_in_chat_message(message: str) -> List[int]:
+    ids: List[int] = []
+    for pattern in (
+        r"(?i)\brun\s+id\s*#?\s*(\d+)",
+        r"(?i)\brun\s+#\s*(\d+)",
+        r"(?i)\bfor\s+run\s*#?\s*(\d+)",
+        r"(?i)\brun\s+(\d+)\b",
+    ):
+        for m in re.finditer(pattern, message):
+            ids.append(int(m.group(1)))
+    return ids
+
+
+def _resolve_chat_context_run_id(message: str, path_run_id: int, user_id: int) -> tuple[int, str]:
+    """
+    If the user names another run they own (e.g. 'summarize run 12', 'run id 12'),
+    use that run's failure list. Last matching mention wins. If a number is not a
+    valid run for this user (e.g. typo, or a failure id), keep the URL run and note it.
+    """
+    candidates = _run_ids_mentioned_in_chat_message(message)
+    if not candidates:
+        return path_run_id, ""
+
+    for cid in reversed(candidates):
+        if get_run(cid, user_id=user_id):
+            if cid != path_run_id:
+                note = (
+                    f"The page is open on run #{path_run_id}, but the user explicitly referenced run #{cid}; "
+                    f"the failure list below is for run #{cid} only. Ground answers in that list."
+                )
+            else:
+                note = ""
+            return cid, note
+
+    bad = candidates[-1]
+    note = (
+        f"The user seemed to reference run #{bad}, but that id is not a run on this account (or it was a typo). "
+        f"The data below is still for run #{path_run_id}; say so briefly if relevant."
+    )
+    return path_run_id, note
+
+
+def _is_general_chat_intent(message: str) -> bool:
+    """
+    True = answer from general verification knowledge only (no run/failure dump in the system prompt).
+    False = ground the reply in run data (current URL run or a run id the user named).
+    """
+    m = (message or "").strip()
+    if not m:
+        return True
+    if "[User focus:" in m:
+        return False
+    if _run_ids_mentioned_in_chat_message(m):
+        return False
+    if re.search(r"(?i)\b(failure|failures|fails)\b", m):
+        return False
+    if re.search(r"(?i)\bfailure\s*(?:id|#)?\s*\d+", m):
+        return False
+    if re.search(
+        r"(?i)\b(this run|my run|the run|run\s*#|run\s+id|for run|uvm_error|uvm_fatal|uvm_warning|dashboard|upload|log file|summarize|summary|top issues|what went|analyze|list)\b",
+        m,
+    ):
+        return False
+    if re.search(r"(?i)\b(summarize|summary|issues|failed|failing|what went)\b", m):
+        return False
+    if re.search(r"(?i)^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|bye)\s*[\.\!]*$", m):
+        return True
+    if re.search(
+        r"(?i)^(what|how|why|when|explain|define|describe|compare|difference|is it|are there|can you|tell me about)\b",
+        m,
+    ):
+        if re.search(r"(?i)\b(my|this|the)\s+(log|run|test|failure|suite)\b", m):
+            return False
+        return True
+    # Likely module / hierarchy name (e.g. CACHE_CTRL) — ground in run data
+    if re.search(r"(?i)(?<![A-Za-z0-9_])[A-Za-z0-9]+_[A-Za-z0-9_]+", m):
+        return False
+    if len(m) < 80 and not re.search(r"\d", m):
+        if not re.search(r"(?i)\b(failure|failures|run|log|uvm|error|module|debug|id)\b", m):
+            return True
+    return False
+
+
+def _truncate_chat_data_block(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return (
+        text[: max_chars - 120]
+        + "\n\n[Data truncated for length. Ask about a narrower scope or a specific failure/run id.]"
+    )
+
+
+def _format_failures_for_chat_detail(failures: List[Dict], *, max_items: int) -> str:
+    lines: List[str] = []
+    for i, f in enumerate(failures[:max_items]):
+        fid = f.get("_id")
+        msg = str(f.get("message") or "")
+        ctx = str(f.get("context") or "")
+        if len(msg) > 6000:
+            msg = msg[:6000] + "…"
+        if len(ctx) > 4000:
+            ctx = ctx[:4000] + "…"
+        lines.append(
+            f"--- failure index {i + 1} | id={fid} ---\n"
+            f"severity: {f.get('severity')}\n"
+            f"severity_raw: {f.get('severity_raw')}\n"
+            f"module: {f.get('module')}\n"
+            f"category: {f.get('category')}\n"
+            f"failure_type: {f.get('failure_type')}\n"
+            f"timestamp: {f.get('timestamp')}\n"
+            f"sim_time: {f.get('sim_time')}\n"
+            f"line_no: {f.get('line_no')}\n"
+            f"test_name: {f.get('test_name')}\n"
+            f"seed: {f.get('seed')}\n"
+            f"uvm_phase: {f.get('uvm_phase')}\n"
+            f"dut_path: {f.get('dut_path')}\n"
+            f"source_file: {f.get('source_file')}\n"
+            f"source_line: {f.get('source_line')}\n"
+            f"unique_failure_id: {f.get('unique_failure_id')}\n"
+            f"message:\n{msg}\n"
+            f"context:\n{ctx}\n"
+        )
+    return "\n".join(lines) if lines else "(no failures in this run)"
+
+
+@app.post("/chat/run/{run_id}")
+@limiter.limit("30/minute")
+def api_run_chat(
+    request: Request,
+    run_id: int,
+    body: RunChatRequest,
+    user: str = Depends(get_current_user),
+):
+    run = get_run(run_id, user_id=user["user_id"])
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    user_turns: List[str] = []
+    for turn in body.history[-12:]:
+        if (turn.role or "").strip().lower() == "user" and (turn.content or "").strip():
+            user_turns.append(turn.content.strip())
+    user_turns.append((body.message or "").strip())
+    combined_user_text = "\n".join(user_turns)
+
+    last_msg = (body.message or "").strip()
+    use_general = _is_general_chat_intent(last_msg)
+
+    from ml.explainability import generate_llm_chat
+
+    if use_general:
+        system = (
+            "You are DebugIQ's assistant for hardware verification, SystemVerilog, UVM, and SVA. "
+            "Answer from general engineering knowledge only. The user did not ask for analysis of a specific "
+            "uploaded run or failure list—do not invent log lines, failure ids, or run-specific data."
+        )
+        msgs: List[Dict[str, str]] = [{"role": "system", "content": system}]
+        for turn in body.history[-20:]:
+            role = (turn.role or "").strip().lower()
+            if role not in {"user", "assistant"} or not (turn.content or "").strip():
+                continue
+            msgs.append({"role": role, "content": turn.content.strip()})
+        msgs.append({"role": "user", "content": last_msg})
+        try:
+            reply = generate_llm_chat(msgs)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"LLM provider error: {str(exc)}") from exc
+        return {"reply": reply, "context_run_id": None, "chat_mode": "general"}
+
+    context_run_id, context_note = _resolve_chat_context_run_id(
+        combined_user_text, run_id, user["user_id"]
+    )
+    context_run = get_run(context_run_id, user_id=user["user_id"])
+    max_failures = int(os.environ.get("CHAT_RUN_MAX_FAILURES", "500"))
+    max_block_chars = int(os.environ.get("CHAT_RUN_DATA_MAX_CHARS", "120000"))
+    failures = get_failures_by_run(context_run_id)
+    block = _format_failures_for_chat_detail(failures, max_items=max_failures)
+    block = _truncate_chat_data_block(block, max_block_chars)
+    fname = (context_run or {}).get("filename") or "unknown"
+    total_f = len(failures)
+
+    system_parts = [
+        "You are DebugIQ's assistant for hardware verification and simulation/UVM logs. "
+        "The user asked for run-grounded help: use ONLY the run metadata and failure records below.",
+        f"The dashboard URL run is #{run_id}. The data below describes run #{context_run_id} "
+        f"(log file: {fname}; {total_f} failure row(s) in DB; up to {max_failures} included in this prompt).",
+        "Answer using these records: quote failure ids, modules, severities, categories, and message/context text. "
+        "Give concrete next steps tied to those lines. If something is not in the data, say so.",
+    ]
+    if context_note:
+        system_parts.append(context_note)
+    system_parts.append(f"Run #{context_run_id} — full failure records:\n{block}")
+    system = "\n\n".join(system_parts)
+
+    msgs = [{"role": "system", "content": system}]
+    for turn in body.history[-20:]:
+        role = (turn.role or "").strip().lower()
+        if role not in {"user", "assistant"} or not (turn.content or "").strip():
+            continue
+        msgs.append({"role": role, "content": turn.content.strip()})
+    msgs.append({"role": "user", "content": body.message.strip()})
+
+    try:
+        reply = generate_llm_chat(msgs)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"LLM provider error: {str(exc)}") from exc
+    return {"reply": reply, "context_run_id": context_run_id, "chat_mode": "run"}
+
+
 @app.post("/deduplicate")
 @limiter.limit("60/minute")
 def api_deduplicate(
@@ -523,6 +743,20 @@ def get_dashboard(
         {"module": key, "count": int(val)} for key, val in module_counts.items()
     ]
 
+    total_rows = len(df)
+    module_efficiency: List[Dict] = []
+    for mod, cnt in module_counts.items():
+        c = int(cnt)
+        eff = (
+            round(100.0 * (1.0 - float(c) / float(total_rows)), 1)
+            if total_rows
+            else 100.0
+        )
+        module_efficiency.append(
+            {"module": mod, "error_count": c, "efficiency": eff}
+        )
+    module_efficiency.sort(key=lambda x: (-x["efficiency"], str(x["module"])))
+
     freq_map = df["unique_failure_id"].value_counts().to_dict()
 
     priority_ranking = (
@@ -669,6 +903,7 @@ def get_dashboard(
         "critical_count": run.get("critical_count"),
         "category_distribution": category_distribution,
         "module_hotspots": module_hotspots,
+        "module_efficiency": module_efficiency,
         "priority_ranking": priority_ranking,
         "failure_clusters": cluster_points,
         "failure_timeline": failure_timeline,
@@ -790,6 +1025,13 @@ def list_runs(
         }
         for r in runs
     ]
+
+
+@app.delete("/runs")
+@limiter.limit("10/minute")
+def clear_all_runs(request: Request, user: str = Depends(get_current_user)):
+    summary = delete_all_runs_for_user(user_id=user["user_id"])
+    return summary
 
 
 @app.get("/compare-runs")

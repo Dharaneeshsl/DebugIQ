@@ -12,6 +12,21 @@ const RequireAuth = ({ children }) => {
   return children;
 };
 
+/** Logged-in users should not see sign-in / sign-up screens */
+const RequireGuest = ({ children }) => {
+  const token = localStorage.getItem("debugiq_token");
+  if (token) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return children;
+};
+
+/** Unknown paths: send guests to login, authenticated users to dashboard */
+const DefaultRedirect = () => {
+  const token = localStorage.getItem("debugiq_token");
+  return <Navigate to={token ? "/dashboard" : "/login"} replace />;
+};
+
 const App = () => (
   <BrowserRouter
     future={{
@@ -45,8 +60,23 @@ const App = () => (
           </RequireAuth>
         }
       />
-      <Route path="/login" element={<Login />} />
-      <Route path="/signup" element={<Signup />} />
+      <Route
+        path="/login"
+        element={
+          <RequireGuest>
+            <Login />
+          </RequireGuest>
+        }
+      />
+      <Route
+        path="/signup"
+        element={
+          <RequireGuest>
+            <Signup />
+          </RequireGuest>
+        }
+      />
+      <Route path="*" element={<DefaultRedirect />} />
     </Routes>
   </BrowserRouter>
 );

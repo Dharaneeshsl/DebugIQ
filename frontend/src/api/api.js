@@ -34,6 +34,7 @@ export const getFailures = (runId, { limit, offset } = {}) =>
   client.get(`/failures/${runId}`, { params: { limit, offset } });
 export const getRuns = ({ limit, offset } = {}) =>
   client.get(`/runs`, { params: { limit, offset } });
+export const deleteAllRuns = () => client.delete("/runs");
 export const deduplicateLogs = (logs, similarity_threshold = 0.9) =>
   client.post(`/deduplicate`, { logs, similarity_threshold });
 export const prioritizeFailures = (feedback) =>
@@ -45,6 +46,9 @@ export const getExplanation = (runId, failureId) =>
 export const logout = () => client.post(`/logout`);
 export const updateFailureStatus = (failureId, status) =>
   client.patch(`/failure/${failureId}/status`, { status });
+
+export const postRunChat = (runId, body) =>
+  client.post(`/chat/run/${runId}`, body);
 
 export const login = async (username, password) => {
   const body = new URLSearchParams();

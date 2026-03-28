@@ -244,6 +244,25 @@ def delete_run(run_id: int, *, user_id: int | None = None) -> None:
     _db()["failures"].delete_many({"run_id": run_id})
 
 
+def delete_all_runs_for_user(*, user_id: int) -> dict:
+    """
+    Remove every run and associated failures (and this user's upload jobs) for one account.
+    Run IDs are global counters; clearing does not reset the sequence (safe for multi-user DBs).
+    """
+    runs_coll = _db()["runs"]
+    failures_coll = _db()["failures"]
+    jobs_coll = _db()["upload_jobs"]
+
+    run_ids = [d["_id"] for d in runs_coll.find({"user_id": user_id}, {"_id": 1})]
+    deleted_failures = 0
+    if run_ids:
+        fr = failures_coll.delete_many({"run_id": {"$in": run_ids}})
+        deleted_failures = fr.deleted_count
+    rr = runs_coll.delete_many({"user_id": user_id})
+    jobs_coll.delete_many({"user_id": user_id})
+    return {"deleted_runs": rr.deleted_count, "deleted_failures": deleted_failures}
+
+
 def get_history_counts(*, user_id: int | None = None) -> dict:
     q = {}
     if user_id is not None:

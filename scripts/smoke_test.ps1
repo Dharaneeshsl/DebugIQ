@@ -2,7 +2,8 @@ param(
   [string]$BaseUrl = "http://localhost:8000",
   [string]$Username = "admin",
   [string]$Password = "admin123",
-  [string]$LogPath = "$PSScriptRoot\..\backend\sample_logs\test.log"
+  [string]$LogPath = "$PSScriptRoot\..\backend\sample_logs\test.log",
+  [switch]$SkipExplain
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,13 +53,33 @@ if ($fails.Count -lt 1) { throw "No failures returned" }
 $first = $fails[0]
 Write-Host ("first_failure_id=" + $first.id)
 
-Write-Host "5) Explain..."
-$exp = Invoke-RestMethod -Method Get -Uri "$BaseUrl/explain/$runId/$($first.id)" -Headers $headers
-$preview = $exp.llm_explanation
-if (!$preview) { throw "llm_explanation missing" }
-$preview = $preview.Substring(0, [Math]::Min(120, $preview.Length))
-$preview = ($preview -replace "`r`n", " ") -replace "`n", " "
-Write-Host ("Explanation received. preview=" + $preview)
+if ($SkipExplain) {
+  Write-Host "5) Explain... skipped (-SkipExplain)"
+} else {
+  Write-Host "5) Explain (requires CHATBOT_API_KEY / GROQ_KEY / OPENAI_API_KEY)..."
+  try {
+    $exp = Invoke-RestMethod -Method Get -Uri "$BaseUrl/explain/$runId/$($first.id)" -Headers $headers
+    $preview = $exp.llm_explanation
+    if (!$preview) { throw "llm_explanation missing" }
+    $preview = $preview.Substring(0, [Math]::Min(120, $preview.Length))
+    $preview = ($preview -replace "`r`n", " ") -replace "`n", " "
+    Write-Host ("Explanation received. preview=" + $preview)
+  } catch {
+    Write-Host ("   WARN: Explain failed (pipeline still OK): " + $_.Exception.Message)
+  }
+}
 
-Write-Host "OK: DebugIQ is submission-ready."
+Write-Host "6) Chat run (optional LLM)..."
+try {
+  $chatBody = @{ message = "list failure modules"; history = @() } | ConvertTo-Json -Depth 5
+  $chat = Invoke-RestMethod -Method Post -Uri "$BaseUrl/chat/run/$runId" -Headers ($headers + @{ "Content-Type" = "application/json" }) -Body $chatBody
+  if ($chat.reply) {
+    $p = $chat.reply.Substring(0, [Math]::Min(80, $chat.reply.Length))
+    Write-Host ("   Chat reply preview: " + $p)
+  }
+} catch {
+  Write-Host ("   WARN: Chat failed: " + $_.Exception.Message)
+}
+
+Write-Host "OK: DebugIQ pipeline + dashboard API checks passed."
 

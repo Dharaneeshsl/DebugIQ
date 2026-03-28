@@ -53,6 +53,7 @@ class DashboardResponse(BaseModel):
     critical_count: int
     category_distribution: List[dict]
     module_hotspots: List[dict]
+    module_efficiency: List[dict]
     priority_ranking: List[dict]
     failure_clusters: List[dict]
     failure_timeline: List[dict]

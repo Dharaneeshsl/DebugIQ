@@ -12,11 +12,6 @@ const Signup = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const token = localStorage.getItem("debugiq_token");
-    if (token) {
-      navigate("/dashboard");
-      return;
-    }
     const load = async () => {
       try {
         const res = await getAdminExists();

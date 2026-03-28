@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { getDashboard, getFailures, exportCSV, uploadLog, getExplanation, getRuns, logout, updateFailureStatus } from "../api/api";
+import { getDashboard, getFailures, exportCSV, uploadLog, getExplanation, getRuns, logout, updateFailureStatus, deleteAllRuns } from "../api/api";
 import HealthScore from "./HealthScore";
 import CategoryDistribution from "./CategoryDistribution";
 import FailurePriorityTable from "./FailurePriorityTable";
 import ModuleHotspot from "./ModuleHotspot";
+import ModuleEfficiency from "./ModuleEfficiency";
 import FailureTimeline from "./FailureTimeline";
 import RootCauseSuggestion from "./RootCauseSuggestion";
 import GraphView from "./GraphView";
 import PriorityHeatmap from "./PriorityHeatmap";
+import RunChatPanel from "./RunChatPanel";
 
 const Dashboard = () => {
   const { runId } = useParams();
@@ -30,6 +32,7 @@ const Dashboard = () => {
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsOffset, setRunsOffset] = useState(0);
   const runsLimit = 8;
+  const [chatOpen, setChatOpen] = useState(false);
 
   useEffect(() => {
     if (!runId) {
@@ -40,6 +43,7 @@ const Dashboard = () => {
         critical_count: 0,
         category_distribution: [],
         module_hotspots: [],
+        module_efficiency: [],
         priority_ranking: [],
         failure_clusters: [],
         failure_timeline: [],
@@ -265,7 +269,38 @@ const Dashboard = () => {
         </div>
 
         <div className="glass rounded-xl p-4 text-sm text-slate-300">
-          <div className="text-xs text-slate-400 mb-2">Recent Runs</div>
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <div className="text-xs text-slate-400">Recent Runs</div>
+            <button
+              type="button"
+              title="Delete every run and failure for your account (upload history cleared)"
+              className="text-[10px] uppercase tracking-wide text-red-400/90 hover:text-red-300 px-2 py-1 rounded border border-red-500/30 hover:border-red-400/50 disabled:opacity-40"
+              disabled={runsLoading || runs.length === 0}
+              onClick={async () => {
+                if (
+                  !window.confirm(
+                    "Remove ALL your runs and failure records from DebugIQ? This cannot be undone."
+                  )
+                ) {
+                  return;
+                }
+                try {
+                  await deleteAllRuns();
+                  setRunsOffset(0);
+                  const res = await getRuns({ limit: runsLimit, offset: 0 });
+                  setRuns(res.data || []);
+                  navigate("/dashboard");
+                } catch (err) {
+                  setError(err?.response?.data?.detail || "Could not clear runs");
+                }
+              }}
+            >
+              Clear all
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-500 mb-2 leading-snug">
+            # is the database run id (per upload), not row order. Use the log filename to tell uploads apart.
+          </p>
           {runsLoading && <div className="text-xs text-slate-500">Loading…</div>}
           {!runsLoading && runs.length === 0 && (
             <div className="text-xs text-slate-500">No runs yet.</div>
@@ -282,14 +317,16 @@ const Dashboard = () => {
                       : "bg-slate-900/30 border-slate-800 hover:bg-slate-900/50 text-slate-300"
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="mono text-xs">#{r.id}</span>
+                  <div className="text-[11px] text-slate-200 font-medium truncate" title={r.filename || ""}>
+                    {r.filename || "upload.log"}
+                  </div>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="mono text-[10px] text-slate-500">
+                      Run id {r.id}
+                    </span>
                     <span className="text-[11px] text-slate-500">
                       {r.total_failures ?? 0} fails
                     </span>
-                  </div>
-                  <div className="text-[11px] text-slate-400 truncate">
-                    {r.filename || "upload.log"}
                   </div>
                 </button>
               ))}
@@ -323,11 +360,21 @@ const Dashboard = () => {
             <h1 className="text-3xl font-semibold">DebugIQ Priority Dashboard</h1>
             <p className="text-slate-400 text-sm mt-1">AI-ranked failures, clustered by root cause.</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <span className="px-3 py-1 rounded-full text-xs bg-emerald-400/10 text-emerald-300 border border-emerald-400/20">Live Analysis</span>
             <span className="px-3 py-1 rounded-full text-xs bg-slate-800 text-slate-300 border border-slate-700">
               {runId ? `Run #${runId}` : "Awaiting Upload"}
             </span>
+            {!chatOpen && (
+              <button
+                type="button"
+                onClick={() => setChatOpen(true)}
+                title={runId ? "Open run assistant" : "Open assistant (pick a run to ask about failures)"}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-600/90 hover:bg-emerald-500 text-white border border-emerald-400/30 shadow-lg shadow-emerald-900/20"
+              >
+                AI assistant
+              </button>
+            )}
           </div>
         </header>
 
@@ -372,9 +419,10 @@ const Dashboard = () => {
           </div>
         </section>
 
-        <section className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
           <CategoryDistribution data={dashboard.category_distribution} />
           <ModuleHotspot data={dashboard.module_hotspots} />
+          <ModuleEfficiency data={dashboard.module_efficiency} />
         </section>
 
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
@@ -568,6 +616,25 @@ const Dashboard = () => {
           </section>
         )}
       </main>
+
+      <RunChatPanel
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        runId={runId}
+        selectedFailure={selected}
+      />
+      {!chatOpen && (
+        <button
+          type="button"
+          aria-label="Open AI assistant"
+          onClick={() => setChatOpen(true)}
+          title={runId ? "Run assistant" : "Assistant — open a run to ask about failures"}
+          className="fixed bottom-6 right-6 z-[90] flex items-center gap-2 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-3 shadow-xl border border-emerald-400/40"
+        >
+          AI
+          <span className="text-emerald-200/90 text-xs font-normal">‹</span>
+        </button>
+      )}
     </div>
   );
 };
