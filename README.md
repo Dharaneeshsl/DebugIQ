@@ -143,4 +143,4 @@ docker compose up --build
 - **Legacy Code**: `database.py` contains old SQLite models—use `mongo_store.py` for all DB work.
 
 ---
-**Build with 💡 and 🧀 for the Hackathon.**
+**Built with 💡 and 🧀 for the Hackathon.**
