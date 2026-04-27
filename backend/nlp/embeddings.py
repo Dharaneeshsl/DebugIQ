@@ -5,10 +5,7 @@ import os
 import numpy as np
 from pydantic import BaseModel
 
-try:
-    from sentence_transformers import SentenceTransformer
-except ImportError:
-    SentenceTransformer = None
+SentenceTransformer = None
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.preprocessing import normalize as sk_normalize
@@ -25,9 +22,20 @@ class EmbeddingConfig(BaseModel):
 _models = {}
 _failed_models = set()
 
+
+def _load_sentence_transformer():
+    global SentenceTransformer
+    if SentenceTransformer is not None:
+        return SentenceTransformer
+    try:
+        from sentence_transformers import SentenceTransformer as _SentenceTransformer
+    except Exception as exc:
+        raise ImportError("sentence-transformers is missing") from exc
+    SentenceTransformer = _SentenceTransformer
+    return SentenceTransformer
+
 def _get_model(config: EmbeddingConfig):
-    if SentenceTransformer is None:
-        raise ImportError("sentence-transformers is missing")
+    sentence_transformer_cls = _load_sentence_transformer()
         
     model_name = "allenai/longformer-base-4096" if config.use_longformer else "microsoft/codebert-base"
     if model_name in _failed_models:
@@ -35,7 +43,7 @@ def _get_model(config: EmbeddingConfig):
     if model_name not in _models:
         logger.info(f"Loading NLP Transformer model: {model_name}")
         try:
-            _models[model_name] = SentenceTransformer(model_name)
+            _models[model_name] = sentence_transformer_cls(model_name)
         except Exception as exc:
             _failed_models.add(model_name)
             raise exc

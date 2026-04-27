@@ -6,10 +6,7 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:
-    SentenceTransformer = None
+SentenceTransformer = None
 
 CATEGORIES = [
     "uvm_fatal",
@@ -62,9 +59,13 @@ def _categorize_tfidf_semantic(message: str) -> str:
 
 
 def _get_model() -> SentenceTransformer:
-    global _model
+    global _model, SentenceTransformer
     if SentenceTransformer is None:
-        raise ImportError("sentence-transformers unavailable")
+        try:
+            from sentence_transformers import SentenceTransformer as _SentenceTransformer
+            SentenceTransformer = _SentenceTransformer
+        except Exception as exc:
+            raise ImportError("sentence-transformers unavailable") from exc
     if _model is None:
         _model = SentenceTransformer("all-MiniLM-L6-v2")
     return _model

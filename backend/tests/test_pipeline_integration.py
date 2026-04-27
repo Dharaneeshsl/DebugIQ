@@ -6,8 +6,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from unittest.mock import patch
+import os
 
 import pytest
+
+# Force light-weight embedding backend before pipeline import.
+os.environ.setdefault("DEBUGIQ_EMBEDDINGS_BACKEND", "tfidf")
 
 from services.pipeline import process_log_text
 
@@ -29,6 +33,18 @@ def mongo_patches():
         patch("services.pipeline.add_failures") as af,
     ):
         yield {"create_run": cr, "add_failures": af, "fake_run": fake_run}
+
+@pytest.fixture(autouse=True)
+def force_tfidf_embeddings_backend():
+    previous = os.environ.get("DEBUGIQ_EMBEDDINGS_BACKEND")
+    os.environ["DEBUGIQ_EMBEDDINGS_BACKEND"] = "tfidf"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("DEBUGIQ_EMBEDDINGS_BACKEND", None)
+        else:
+            os.environ["DEBUGIQ_EMBEDDINGS_BACKEND"] = previous
 
 
 def test_process_log_text_full_pipeline(mongo_patches) -> None:
