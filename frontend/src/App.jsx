@@ -1,8 +1,10 @@
+import { Suspense, lazy } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import LogUpload from "./components/LogUpload";
-import Dashboard from "./components/Dashboard";
-import Login from "./components/Login";
-import Signup from "./components/Signup";
+
+const LogUpload = lazy(() => import("./components/LogUpload"));
+const Dashboard = lazy(() => import("./components/Dashboard"));
+const Login = lazy(() => import("./components/Login"));
+const Signup = lazy(() => import("./components/Signup"));
 
 const RequireAuth = ({ children }) => {
   const token = localStorage.getItem("debugiq_token");
@@ -34,50 +36,61 @@ const App = () => (
       v7_relativeSplatPath: true,
     }}
   >
-    <Routes>
-      <Route path="/" element={<Navigate to="/login" replace />} />
-      <Route
-        path="/upload"
-        element={
-          <RequireAuth>
-            <LogUpload />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/dashboard"
-        element={
-          <RequireAuth>
-            <Dashboard />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/dashboard/:runId"
-        element={
-          <RequireAuth>
-            <Dashboard />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/login"
-        element={
-          <RequireGuest>
-            <Login />
-          </RequireGuest>
-        }
-      />
-      <Route
-        path="/signup"
-        element={
-          <RequireGuest>
-            <Signup />
-          </RequireGuest>
-        }
-      />
-      <Route path="*" element={<DefaultRedirect />} />
-    </Routes>
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-200">
+          <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/80 px-5 py-3">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent" />
+            <span className="text-sm">Loading DebugIQ...</span>
+          </div>
+        </div>
+      }
+    >
+      <Routes>
+        <Route path="/" element={<Navigate to="/login" replace />} />
+        <Route
+          path="/upload"
+          element={
+            <RequireAuth>
+              <LogUpload />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/dashboard"
+          element={
+            <RequireAuth>
+              <Dashboard />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/dashboard/:runId"
+          element={
+            <RequireAuth>
+              <Dashboard />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/login"
+          element={
+            <RequireGuest>
+              <Login />
+            </RequireGuest>
+          }
+        />
+        <Route
+          path="/signup"
+          element={
+            <RequireGuest>
+              <Signup />
+            </RequireGuest>
+          }
+        />
+        <Route path="*" element={<DefaultRedirect />} />
+      </Routes>
+    </Suspense>
   </BrowserRouter>
 );
 

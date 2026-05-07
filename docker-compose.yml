@@ -1,50 +1,93 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+    restart: unless-stopped
     ports:
       - "8000:8000"
     depends_on:
-      - rabbitmq
-      - mongo
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     env_file:
       - path: ./backend/.env
         required: false
     environment:
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-      - MONGO_URI=mongodb://mongo:27017
+      MONGO_URI: mongodb://mongo:27017/debugiq
+      MONGO_DB_NAME: debugiq
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      DEBUGIQ_EMBEDDINGS_BACKEND: ${DEBUGIQ_EMBEDDINGS_BACKEND:-tfidf}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   worker:
-    build: ./backend
+    build:
+      context: ./backend
+    restart: unless-stopped
     depends_on:
-      - rabbitmq
-      - mongo
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
     env_file:
       - path: ./backend/.env
         required: false
     environment:
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-      - MONGO_URI=mongodb://mongo:27017
-    command: ["python", "worker.py"]
+      MONGO_URI: mongodb://mongo:27017/debugiq
+      MONGO_DB_NAME: debugiq
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      DEBUGIQ_EMBEDDINGS_BACKEND: ${DEBUGIQ_EMBEDDINGS_BACKEND:-tfidf}
+    command: ["python", "-u", "worker.py"]
   
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+    restart: unless-stopped
     ports:
       - "5173:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
+    restart: unless-stopped
     ports:
       - "5672:5672"
       - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
 
   mongo:
     image: mongo:7
+    restart: unless-stopped
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "mongodb://127.0.0.1:27017/admin", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
 
 volumes:
   mongo_data:

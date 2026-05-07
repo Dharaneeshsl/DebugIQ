@@ -1,147 +1,240 @@
-# 🧠 DebugIQ — AI-Powered Simulation Log Analysis
+# DebugIQ - AI-Assisted Simulation Log Analysis
 
-> **"DebugIQ transforms raw hardware logs into prioritized, explainable failure insights using NLP embeddings, clustering, deduplication, and ML-based scoring."**
+> DebugIQ turns raw verification and simulation logs into prioritized, explainable failure insights using parsing, deduplication, clustering, scoring, and dashboard-based triage.
 
----
+## Pitch
 
-## 🌟 Hackathon Pitch (Top 1% Soundbyte)
-"We use a hybrid ML pipeline combining symbolic parsing, transformer embeddings, approximate nearest neighbor search (LSH), density clustering, and multi-factor optimization to convert noisy logs into actionable intelligence."
+DebugIQ is an end-to-end log intelligence platform for regression-style hardware or verification logs. It ingests noisy `.log`, `.txt`, and `.gz` files, extracts failures with context, groups semantically similar issues, ranks them by impact, and presents the results in a FastAPI + React workflow built for fast debugging.
 
----
+This project is best described as:
+- AI-assisted
+- explainable
+- production-oriented
+- demo-ready and submission-ready
 
-## 🚀 What is DebugIQ?
-DebugIQ is an **AI-powered simulation log analysis and failure prioritization platform** built for chip/hardware verification regression logs. It ingests large `.log`/`.txt`/`.gz` files, extracts failures with NLP context awareness, deduplicates semantically similar issues, clusters them, prioritizes via ML scoring, and serves explainable results through a FastAPI backend + React dashboard.
+It should not be described as:
+- guaranteed 100% accurate
+- fully validated for all unseen logs
+- proven live-production infrastructure in every environment
 
----
+## What DebugIQ Does
 
-## 🧩 Core ML Pipeline
-Think of the pipeline like this:
-**Raw Logs → Clean Data → Understand Meaning → Remove Duplicates → Group Issues → Rank Importance → Explain**
+1. Parse failure lines and nearby context from raw logs.
+2. Normalize and preprocess messages for downstream analysis.
+3. Categorize failures into common debugging buckets.
+4. Generate embeddings for semantic comparison.
+5. Deduplicate repeated or highly similar failures.
+6. Cluster related failures for dashboard visualization.
+7. Score failures by severity, recurrence, module impact, and history.
+8. Surface root-cause suggestions and explainability signals.
+9. Present results through an interactive dashboard and report export flow.
 
-1.  **Ingestion & Parsing**: Regex-based extraction of failure lines + context window (2 lines before/after).
-2.  **Preprocessing**: Lowercasing, symbol removal, and stopword filtering.
-3.  **Categorization**: Multi-layer category detection (rule-based keywords + ML sentence embeddings fallback).
-    - Categories: `assertion_failure`, `timeout_error`, `protocol_violation`, `data_mismatch`, `memory_error`.
-4.  **Embedding Generation**: Logs become vectors (CodeBERT preferred, TF-IDF fallback).
-5.  **Deduplication**: Hybrid LSH filter + Cosine similarity (threshold 0.9) + Siamese Network scaffold.
-6.  **Clustering**: DBSCAN groups similar issues; PCA projects to 2D for high-quality dashboard visualization.
-7.  **Priority Scoring**: Multi-factor ranking: `Score = 0.4*Severity + 0.3*Frequency + 0.2*Module + 0.1*History`.
-8.  **Root Cause Analysis**: Temporal graph building via NetworkX to trace chains of failures.
-9.  **Explainability**: RAG-style context retrieval + Gemini-1.5-Flash (LLM) + SHAP feature importance.
+## Core Pipeline
 
----
+The pipeline looks like this:
 
-## 🛠️ Full Tech Stack
+`Raw logs -> Parsing -> Preprocessing -> Categorization -> Embeddings -> Deduplication -> Clustering -> Priority scoring -> Explainability -> Dashboard`
 
-### Backend — Python 3.11
-- **API**: FastAPI, Uvicorn, Pydantic, SlowAPI (rate limiting), JWT Auth.
-- **Database**: MongoDB via PyMongo (with auto-increment counters).
-- **ML/DS**: Scikit-Learn (DBSCAN, PCA, KMeans), Sentence-Transformers (CodeBERT), Datasketch (LSH), PyTorch (Siamese Networks), Optuna (hyperparameter tuning), SHAP (explainability), NetworkX (graph RCA).
-- **Messaging**: RabbitMQ via Pika (async ingestion).
-- **LLM**: Google Gemini-1.5-Flash API (primary), OpenAI-compatible (fallback).
+Main pipeline stages:
+- Parsing: regex-based failure extraction with context windows
+- Categorization: rule-based and embedding-assisted labeling
+- Deduplication: hybrid similarity flow with LSH and semantic matching
+- Clustering: grouping similar failures for triage and graph views
+- Priority scoring: weighted ranking using severity, frequency, module, and history
+- Explainability: root-cause hints, context retrieval, and SHAP-style feature importance
 
-### Frontend — React 18 + Vite
-- **Visuals**: Recharts (Pie, Bar, Line, Scatter), `react-force-graph-2d` (Cluster/RCA topology), `react-heatmap-grid`.
-- **Styling**: Tailwind CSS v3, Lucide React (icons).
-- **State/API**: React Router v6, Axios (JWT interceptors).
+## Tech Stack
+
+### Backend
+- Python
+- FastAPI
+- PyMongo / MongoDB
+- Scikit-learn
+- NetworkX
+- PyTorch scaffolding for Siamese-style similarity experiments
+- SlowAPI rate limiting
+- JWT authentication
+
+### Frontend
+- React 18
+- Vite
+- Tailwind CSS
+- Axios
+- Recharts
+- react-force-graph-2d
 
 ### Infrastructure
-- **Containerization**: Docker & Docker Compose (Backend, Worker, Frontend, RabbitMQ).
-- **Proxy**: Nginx (Frontend server & /api proxy).
-- **CI**: GitHub Actions (Backend checks & Frontend build).
+- Docker
+- Docker Compose
+- Nginx
+- RabbitMQ for async ingestion
+- MongoDB container for local stack runs
 
----
+## Project Structure
 
-## 🏗️ Architecture Flow
+- `backend/main.py`: FastAPI app and API routes
+- `backend/services/pipeline.py`: main log-processing pipeline
+- `backend/mongo_store.py`: MongoDB access layer
+- `backend/ml/`: ML and analytics components
+- `frontend/src/components/Dashboard.jsx`: main analytics dashboard
+- `frontend/src/api/api.js`: frontend API client
+- `scripts/run_full_check.ps1`: backend tests + frontend production build
+- `scripts/smoke_test.ps1`: live API smoke test
 
-```mermaid
-graph TD
-    A[User Log Upload] -->|POST /upload| B(FastAPI Backend)
-    B --> C{Pipeline Orchestrated}
-    C --> D[Log Parser & Context Extractor]
-    D --> E[NLP Categorizer & Preprocessor]
-    E --> F[Embedding Generator - CodeBERT]
-    F --> G[MinHash LSH - Deduplication]
-    G --> H[Clustering - DBSCAN/KMeans]
-    H --> I[Scoring & Prioritization - Optuna]
-    I --> J[Root Cause Mapping - NetworkX]
-    J --> K[AI Explanation - Gemini + SHAP]
-    K --> L[MongoDB - Performance & History Tracking]
-    L --> M[React Dashboard - Deep Failure Analysis]
-```
+## Verified Status
 
----
+As checked on May 7, 2026:
 
-## ⚡ Getting Started
+- Backend unit and integration tests pass
+- Frontend production build passes
+- The repository is packaged in a submission-ready way
+- Environment templates are present
+- Docker ignore files are present
+
+What is verified:
+- code builds
+- backend tests pass
+- frontend production bundle builds successfully
+
+What is not yet fully verified in this repository alone:
+- a successful live full-stack run in every environment
+- guaranteed accuracy on every possible log dataset
+- a valid claim of 100% ML correctness
+
+## Accuracy Claim
+
+DebugIQ uses ML-assisted heuristics and explainable ranking to improve debugging speed and triage quality. It is appropriate to claim:
+
+- high-value failure prioritization
+- explainable ML-assisted analysis
+- tested end-to-end pipeline behavior
+
+It is not appropriate to claim:
+
+- 100% accurate results
+- perfect detection on all unseen logs
+- guaranteed root-cause correctness
+
+## Getting Started
 
 ### Prerequisites
-- Python 3.11+
+
+- Python 3.10+
 - Node.js 18+
-- MongoDB instance (local or Atlas)
-- RabbitMQ (optional for local, required for async)
+- MongoDB
+- RabbitMQ for async ingestion
 
-### 1. Setup Environment
-Copy `backend/.env.example` to `backend/.env` and fill in the required variables:
-- `MONGO_URI`: Your MongoDB connection string.
-- `GEMINI_API_KEY`: API key for Gemini-1.5-Flash.
-- `DEBUGIQ_JWT_SECRET`: Random secret string for JWT auth.
-- Never commit `backend/.env`; rotate keys immediately if secrets are exposed.
+### Backend setup
 
-### 2. Local Run
-**Backend:**
 ```bash
 cd backend
 pip install -r requirements.txt
+cp .env.example .env
 python -m uvicorn main:app --reload --port 8000
 ```
-**Worker (Async Support):**
-```bash
-cd backend
-python worker.py
-```
-**Frontend:**
+
+Required backend environment values are documented in `backend/.env.example`.
+
+### Frontend setup
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-### 3. Docker (Recommended)
+Optional frontend environment values are documented in `frontend/.env.example`.
+
+### Docker
+
 ```bash
 docker compose up --build
 ```
 
----
+This starts:
+- `frontend` on `http://localhost:5173`
+- `backend` on `http://localhost:8000`
+- `mongo` on `localhost:27017`
+- `rabbitmq` on `localhost:5672`
+- RabbitMQ management UI on `http://localhost:15672`
 
-## 🎯 Demo Flow for Judges
-1.  **Signup/Login**: Access the app at `http://localhost:5173/login`.
-    - *Default Admin*: `admin` / `admin123` (configured via env).
-2.  **Upload Log**: Go to the Upload tab and provide a `.log`, `.txt`, or `.gz` simulation file.
-3.  **Dashboard Hub**: See failure counts, health scores, and module hotspots.
-4.  **Interactive Graph**: Explore failure clusters or root cause chains in a force-directed graph.
-5.  **Failure Analysis**: Click any row in the table to see:
-    - **Context Window**: Exactly what happened in the logs.
-    - **Root Cause Chain**: Temporal sequence leading to the failure.
-    - **AI Explanation & Recommendations**: Gemini-powered insights on how to fix the issue.
-    - **Model Confidence**: SHAP feature importance explaining why it was prioritized.
+The Compose stack now includes:
+- health checks for MongoDB, RabbitMQ, backend, and frontend
+- startup ordering based on service health
+- persistent MongoDB storage through a named volume
+- local-container defaults for `MONGO_URI` and `RABBITMQ_URL`
 
----
+If you want to stop the stack:
 
-## 📂 Project Structure Highlights
-- `/backend/main.py`: Main FastAPI app with JWT and rate limiting.
-- `/backend/mongo_store.py`: MongoDB abstraction & ID management.
-- `/backend/services/pipeline.py`: Core orchestration of the ML pipeline.
-- `/backend/ml/`: Individual ML modules (dedup, clusters, RCA, scoring, explainability).
-- `/frontend/src/api/api.js`: Axios client with JWT interceptors.
-- `/frontend/src/components/Dashboard.jsx`: Central command center for analytics.
+```bash
+docker compose down
+```
 
----
+If you want to stop it and also remove the MongoDB volume:
 
-## ⚠️ Known Bugs & Roadmap
-- **No Mongo in Compose**: Currently requires external `MONGO_URI` or update to `docker-compose.yml`.
-- **Pagination**: Large logs (>1500 failures) need frontend/backend pagination.
-- **Token Blacklisting**: JWTs can't be revoked server-side yet.
-- **Legacy Code**: `database.py` contains old SQLite models—use `mongo_store.py` for all DB work.
+```bash
+docker compose down -v
+```
 
----
-**Built with 💡 and 🧀 for the Hackathon.**
+## Local Verification
+
+### Offline/full check
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_full_check.ps1
+```
+
+This runs:
+- backend pytest suite
+- frontend production build
+
+### Live smoke test
+
+With the backend and database running:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/smoke_test.ps1
+```
+
+## Demo Flow
+
+1. Open the app and sign in.
+2. Upload a simulation log.
+3. Review totals, health score, and unique failure counts.
+4. Inspect clustered issues and priority rankings.
+5. Open a failure to review context, recommendations, and explainability output.
+6. Export CSV or compare recent uploads for triage.
+
+## Suggested Submission Wording
+
+Use wording like this in your submission:
+
+> DebugIQ is an end-to-end AI-assisted verification log analysis platform that parses raw simulation logs, deduplicates repeated failures, clusters related issues, prioritizes them with explainable scoring, and presents the results in an interactive dashboard for faster debugging.
+
+Short version:
+
+> End-to-end AI-assisted log triage with explainable failure prioritization.
+
+Avoid wording like:
+
+- "100% accurate"
+- "guaranteed correct"
+- "perfect ML detection"
+- "fully proven production deployment in every environment"
+
+## Current Limitations
+
+- Live deployment still depends on a working MongoDB connection and runtime environment
+- Async ingestion requires RabbitMQ
+- Large logs may need pagination and more tuning for UI responsiveness
+- LLM-backed explanation quality depends on external provider availability and API keys
+
+## Security Note
+
+- Do not commit real API keys, passwords, or database credentials
+- Rotate any secrets that were previously exposed during development
+- Use `.env.example` as the template, not `.env`
+
+## Final Verdict
+
+DebugIQ is in a strong state for hackathon submission and demo use. The codebase is buildable, test-backed, and structured like a production-oriented prototype. The correct claim is that it is submission-ready and demo-ready, not that it delivers guaranteed 100% accurate ML outcomes.
