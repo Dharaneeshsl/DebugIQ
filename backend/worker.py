@@ -67,7 +67,15 @@ def _consume_forever() -> None:
 
 
 if __name__ == "__main__":
-    init_mongo()
+    while True:
+        try:
+            init_mongo()
+            print("[DebugIQ worker] MongoDB connected.")
+            break
+        except Exception as exc:  # pragma: no cover
+            print(f"[DebugIQ worker] MongoDB not ready: {exc}; retrying in 5s...")
+            time.sleep(5)
+
     while True:
         try:
             _consume_forever()

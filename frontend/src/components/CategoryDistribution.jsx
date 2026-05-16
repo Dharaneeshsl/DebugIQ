@@ -1,11 +1,18 @@
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 const COLORS = {
-  assertion_failure: "#ef4444",
-  data_mismatch: "#f97316",
-  timeout_error: "#eab308",
-  protocol_violation: "#8b5cf6",
-  memory_error: "#06b6d4",
+  uvm_fatal: "#dc2626",
+  uvm_error: "#ef4444",
+  uvm_warning: "#f97316",
+  uvm_phase_error: "#eab308",
+  uvm_sequence_error: "#84cc16",
+  uvm_scoreboard_mismatch: "#06b6d4",
+  sva_assertion_failure: "#8b5cf6",
+  assertion_failure: "#ec4899",
+  timeout_error: "#f59e0b",
+  protocol_violation: "#a855f7",
+  data_mismatch: "#10b981",
+  memory_error: "#3b82f6",
 };
 
 const CategoryDistribution = ({ data }) => (

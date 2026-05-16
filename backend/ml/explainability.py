@@ -18,7 +18,6 @@ try:
 except Exception:  # pragma: no cover
     GroqClient = None
 
-import shap
 import numpy as np
 
 def _build_retrieval_corpus() -> List[Dict[str, str]]:
@@ -249,29 +248,27 @@ def generate_llm_chat(messages: List[Dict[str, str]]) -> str:
 
 def compute_shap_importance(features_array: np.ndarray, feature_names: list, weights: dict) -> dict:
     """
-    Simulate SHAP for linear scoring function since the exact weights and values 
-    completely determine the importance mechanically.
-    A true SHAP explainer is used here as requested.
+    Compute SHAP-equivalent importance for the linear scoring model.
+
+    score = severity*w_severity + frequency*w_frequency + module*w_module
     """
     if len(features_array) < 2:
-        return {f: 0.33 for f in feature_names}
-        
-    # Prediction function mapping standard feature matrix to score
-    # x is shape (N, 3): [sev_val, freq_val, mod_val]
-    def model_predict(x):
-        return x[:, 0] * weights["severity"] + x[:, 1] * weights["frequency"] + x[:, 2] * weights["module"]
+        return {f: round(1.0 / len(feature_names), 3) for f in feature_names}
 
-    # Use LinearExplainer or KernelExplainer
-    explainer = shap.KernelExplainer(model_predict, features_array[:10])
-    
-    # Explain the specific instance (index 0 implies we pass just the instance)
-    instance = features_array[0:1]
-    shap_vals = explainer.shap_values(instance)
-    
-    vals = np.abs(shap_vals[0])
-    total = np.sum(vals)
+    weight_vals = np.array(
+        [
+            weights.get("severity", 0.4),
+            weights.get("frequency", 0.3),
+            weights.get("module", 0.2),
+        ]
+    )
+    stds = np.std(features_array, axis=0)
+    importances = np.abs(weight_vals * stds)
+    total = np.sum(importances)
     if total == 0:
-        return {f: 1.0/len(feature_names) for f in feature_names}
-        
-    # Fix IDE round typing by using Python float parsing with format
-    return {feature_names[i]: float(f"{float(vals[i]/total):.3f}") for i in range(len(feature_names))}
+        return {f: round(1.0 / len(feature_names), 3) for f in feature_names}
+
+    return {
+        feature_names[i]: float(f"{float(importances[i] / total):.3f}")
+        for i in range(len(feature_names))
+    }

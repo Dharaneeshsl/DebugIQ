@@ -35,3 +35,7 @@ jobs:
       - name: Tests
         run: |
           pytest -q backend/tests
+        env:
+          DEBUGIQ_EMBEDDINGS_BACKEND: tfidf
+          MONGO_URI: mongodb://localhost:27017
+          MONGO_DB_NAME: debugiq_test

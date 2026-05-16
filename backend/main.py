@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -5,10 +7,12 @@ from typing import List, Dict, Optional
 from pathlib import Path
 import io
 import gzip
+import os
 import re
 import pandas as pd
 from pydantic import BaseModel
 from sklearn.decomposition import PCA
+from dotenv import load_dotenv
 
 from nlp.embeddings import generate_embeddings, EmbeddingConfig
 from ml.dedup_engine import DedupEngine, DedupConfig
@@ -20,7 +24,14 @@ from preprocessor import preprocess_records
 from categorizer import categorize_messages
 from deduplicator import deduplicate
 from clusterer import cluster_embeddings
-from scorer import compute_scores, optimize_weights, prioritize_failures
+from scorer import (
+    MODULE_WEIGHTS,
+    SEVERITY_WEIGHTS,
+    compute_scores,
+    get_current_weights,
+    optimize_weights,
+    prioritize_failures,
+)
 from services.pipeline import process_log_text
 from auth_utils import verify_password, hash_password
 from mongo_store import (
@@ -47,7 +58,27 @@ from mongo_store import (
     is_token_revoked,
 )
 
-app = FastAPI(title="DebugIQ API")
+# Load env from backend/.env explicitly (works regardless of cwd)
+load_dotenv(dotenv_path=(Path(__file__).resolve().parent / ".env"))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_mongo()
+    # Seed a single fixed admin if none exists.
+    if not admin_exists():
+        try:
+            create_user(ADMIN_USERNAME, hash_password(ADMIN_PASSWORD), "admin")
+            logger.info("Seeded initial admin user from environment.")
+        except Exception as exc:
+            logger.warning("Failed to seed admin user: %s", exc)
+    yield
+
+
+app = FastAPI(title="DebugIQ API", lifespan=lifespan)
+
+_cors_origins_env = os.environ.get("CORS_ALLOWED_ORIGINS", "")
+_extra_origins = [origin.strip() for origin in _cors_origins_env.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,6 +87,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
+        *_extra_origins,
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -71,12 +103,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 import time
 import uuid
 import jwt
-import os
 import pika
-from dotenv import load_dotenv
-
-# Load env from backend/.env explicitly (works regardless of cwd)
-load_dotenv(dotenv_path=(Path(__file__).resolve().parent / ".env"))
 
 SECRET_KEY = os.environ.get("DEBUGIQ_JWT_SECRET", "debugiq_dev_only_secret_change_me")
 ALGORITHM = "HS256"
@@ -276,18 +303,6 @@ def _to_dataframe(failures: List[Dict]) -> pd.DataFrame:
     return pd.DataFrame(failures)
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    init_mongo()
-    # Seed a single fixed admin if none exists.
-    if not admin_exists():
-        try:
-            create_user(ADMIN_USERNAME, hash_password(ADMIN_PASSWORD), "admin")
-            logger.info("Seeded initial admin user from environment.")
-        except Exception as exc:
-            logger.warning("Failed to seed admin user: %s", exc)
-
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -343,7 +358,6 @@ def api_explain(
         raise HTTPException(status_code=404, detail="Failure not found")
 
     from ml.explainability import generate_llm_explanation, compute_shap_importance
-    from scorer import get_current_weights, SEVERITY_WEIGHTS, MODULE_WEIGHTS
     import numpy as np
 
     failure_context = {
@@ -653,7 +667,13 @@ def upload_log_async(
 ):
     text = _read_upload(file)
     job = create_upload_job(file.filename or "upload.log", text, user_id=user["user_id"])
-    _publish_upload_job(job["_id"])
+    try:
+        _publish_upload_job(job["_id"])
+    except Exception as exc:
+        logger.warning(
+            "RabbitMQ publish failed (job queued in DB, worker may not be running): %s",
+            exc,
+        )
     return {"job_id": job["_id"]}
 
 
