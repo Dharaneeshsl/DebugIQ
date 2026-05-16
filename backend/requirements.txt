@@ -3,6 +3,7 @@ uvicorn
 pandas
 numpy
 scikit-learn
+sentence-transformers
 python-multipart
 pydantic
 datasketch

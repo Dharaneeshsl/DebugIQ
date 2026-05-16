@@ -87,6 +87,11 @@ export default function RunChatPanel({ open, onClose, runId, selectedFailure }) 
         </div>
       )}
 
+      {!runId ? (
+        <div className="min-h-0 flex-1 px-4 py-6 text-sm text-slate-400">
+          Please open a run first.
+        </div>
+      ) : (
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 space-y-3">
         {messages.map((m, i) => (
           <div
@@ -111,7 +116,9 @@ export default function RunChatPanel({ open, onClose, runId, selectedFailure }) 
         {error && <div className="text-xs text-amber-400 break-words">{error}</div>}
         <div ref={endRef} />
       </div>
+      )}
 
+      {runId && (
       <div className="shrink-0 border-t border-slate-800 bg-slate-950/95 p-3 pt-3 space-y-2 shadow-[0_-8px_24px_rgba(0,0,0,0.35)]">
         <textarea
           rows={3}
@@ -136,6 +143,7 @@ export default function RunChatPanel({ open, onClose, runId, selectedFailure }) 
           Send
         </button>
       </div>
+      )}
     </div>
   );
 }
