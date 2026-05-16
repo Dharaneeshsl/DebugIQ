@@ -13,6 +13,16 @@ import pandas as pd
 from pydantic import BaseModel
 from sklearn.decomposition import PCA
 from dotenv import load_dotenv
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from loguru import logger
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from prometheus_fastapi_instrumentator import Instrumentator
+import time
+import uuid
+import jwt
+import pika
 
 from nlp.embeddings import generate_embeddings, EmbeddingConfig
 from ml.dedup_engine import DedupEngine, DedupConfig
@@ -61,6 +71,11 @@ from mongo_store import (
 # Load env from backend/.env explicitly (works regardless of cwd)
 load_dotenv(dotenv_path=(Path(__file__).resolve().parent / ".env"))
 
+SECRET_KEY = os.environ.get("DEBUGIQ_JWT_SECRET", "debugiq_dev_only_secret_change_me")
+ALGORITHM = "HS256"
+ADMIN_USERNAME = os.environ.get("DEBUGIQ_ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("DEBUGIQ_ADMIN_PASSWORD", "admin123")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -93,22 +108,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from loguru import logger
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-from prometheus_fastapi_instrumentator import Instrumentator
-import time
-import uuid
-import jwt
-import pika
-
-SECRET_KEY = os.environ.get("DEBUGIQ_JWT_SECRET", "debugiq_dev_only_secret_change_me")
-ALGORITHM = "HS256"
-ADMIN_USERNAME = os.environ.get("DEBUGIQ_ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.environ.get("DEBUGIQ_ADMIN_PASSWORD", "admin123")
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
