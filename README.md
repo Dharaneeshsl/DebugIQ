@@ -129,11 +129,10 @@ It is not appropriate to claim:
 ```bash
 cd backend
 pip install -r requirements.txt
-cp .env.example .env
 python -m uvicorn main:app --reload --port 8000
 ```
 
-Required backend environment values are documented in `backend/.env.example`.
+Set the required backend environment values in `backend/.env` before starting the API.
 
 ### Frontend setup
 
@@ -143,7 +142,7 @@ npm install
 npm run dev
 ```
 
-Optional frontend environment values are documented in `frontend/.env.example`.
+Set `VITE_API_BASE_URL` in `frontend/.env` if the frontend should call a backend URL other than the local default.
 
 ### Docker
 
@@ -233,7 +232,7 @@ Avoid wording like:
 
 - Do not commit real API keys, passwords, or database credentials
 - Rotate any secrets that were previously exposed during development
-- Use `.env.example` as the template, not `.env`
+- Keep real environment files local and out of commits
 
 ## Final Verdict
 

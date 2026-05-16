@@ -9,6 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 LOGHUB_DIR = ROOT / "loghub"
 OUTPUT_DIR = ROOT / "logs"
 
+# This utility expects a local LogHub checkout at ./loghub, which is gitignored
+# because the upstream datasets are large. Fresh clones should add that folder
+# before running this script.
+
 MODULES = [
     "AXI_INTERFACE",
     "MEMORY_CTRL",
