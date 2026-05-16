@@ -290,14 +290,6 @@ def _publish_upload_job(job_id: int) -> None:
         connection.close()
 
 
-def _health_score(total: int, unique: int) -> float:
-    if total == 0:
-        return 100.0
-    duplicates = max(total - unique, 0)
-    score = (duplicates / total) * 100.0
-    return round(score, 2)
-
-
 def _to_dataframe(failures: List[Dict]) -> pd.DataFrame:
     return pd.DataFrame(failures)
 
