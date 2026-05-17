@@ -175,6 +175,21 @@ If you want to stop it and also remove the MongoDB volume:
 docker compose down -v
 ```
 
+### Render backend deployment
+
+For a Render Web Service, set the backend Dockerfile path to `backend/Dockerfile`.
+The container command reads Render's `PORT` automatically.
+
+Required environment variables:
+- `MONGO_URI` or `MONGODB_URI`: a reachable MongoDB connection string, such as MongoDB Atlas or a Render private service URL. Do not use `localhost:27017` on Render, because localhost points to the web container itself.
+- `MONGO_DB_NAME`: database name, usually `debugiq`.
+- `DEBUGIQ_JWT_SECRET`: a long random secret.
+- `DEBUGIQ_ADMIN_USERNAME` and `DEBUGIQ_ADMIN_PASSWORD`: initial admin account values.
+
+Optional:
+- `RABBITMQ_URL`: needed only for `/upload-async`; synchronous `/upload` works without RabbitMQ.
+- `CORS_ALLOWED_ORIGINS`: comma-separated deployed frontend origins.
+
 ## Local Verification
 
 ### Offline/full check

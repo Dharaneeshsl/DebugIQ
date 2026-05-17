@@ -18,12 +18,20 @@ _client: MongoClient | None = None
 def _get_client() -> MongoClient:
     global _client
     if _client is None:
-        mongo_uri = os.environ.get("MONGO_URI")
+        mongo_uri = os.environ.get("MONGO_URI") or os.environ.get("MONGODB_URI")
         if mongo_uri:
             mongo_uri = mongo_uri.strip()
         if not mongo_uri:
-            raise RuntimeError("MONGO_URI is not set")
-        _client = MongoClient(mongo_uri)
+            raise RuntimeError("MONGO_URI or MONGODB_URI is not set")
+        if os.environ.get("RENDER") and (
+            "localhost" in mongo_uri or "127.0.0.1" in mongo_uri
+        ):
+            raise RuntimeError(
+                "MongoDB is configured to use localhost on Render. "
+                "Set MONGO_URI or MONGODB_URI to your Render private MongoDB URL "
+                "or MongoDB Atlas connection string."
+            )
+        _client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
     return _client
 
 
