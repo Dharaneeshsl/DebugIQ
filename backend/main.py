@@ -475,6 +475,24 @@ def _is_general_chat_intent(message: str) -> bool:
     return False
 
 
+def _strip_user_focus_prefix(message: str) -> str:
+    return re.sub(r"(?is)^\[User focus:[^\]]+\]\s*", "", message or "").strip()
+
+
+def _focused_failure_id(message: str) -> int | None:
+    match = re.search(r"(?i)\[User focus:\s*failure id\s*=\s*(\d+)", message or "")
+    return int(match.group(1)) if match else None
+
+
+def _is_short_social_message(message: str) -> bool:
+    return bool(
+        re.search(
+            r"(?i)^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|bye)\s*[\.\!]*$",
+            (message or "").strip(),
+        )
+    )
+
+
 def _truncate_chat_data_block(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
@@ -490,10 +508,10 @@ def _format_failures_for_chat_detail(failures: List[Dict], *, max_items: int) ->
         fid = f.get("_id")
         msg = str(f.get("message") or "")
         ctx = str(f.get("context") or "")
-        if len(msg) > 6000:
-            msg = msg[:6000] + "…"
-        if len(ctx) > 4000:
-            ctx = ctx[:4000] + "…"
+        if len(msg) > 600:
+            msg = msg[:600] + "..."
+        if len(ctx) > 300:
+            ctx = ctx[:300] + "..."
         lines.append(
             f"--- failure index {i + 1} | id={fid} ---\n"
             f"severity: {f.get('severity')}\n"
@@ -537,7 +555,11 @@ def api_run_chat(
     combined_user_text = "\n".join(user_turns)
 
     last_msg = (body.message or "").strip()
-    use_general = _is_general_chat_intent(last_msg)
+    clean_last_msg = _strip_user_focus_prefix(last_msg)
+    focus_failure_id = _focused_failure_id(last_msg)
+    use_general = _is_general_chat_intent(clean_last_msg) and (
+        focus_failure_id is None or _is_short_social_message(clean_last_msg)
+    )
 
     from ml.explainability import generate_llm_chat
 
@@ -553,7 +575,7 @@ def api_run_chat(
             if role not in {"user", "assistant"} or not (turn.content or "").strip():
                 continue
             msgs.append({"role": role, "content": turn.content.strip()})
-        msgs.append({"role": "user", "content": last_msg})
+        msgs.append({"role": "user", "content": clean_last_msg})
         try:
             reply = generate_llm_chat(msgs)
         except Exception as exc:
@@ -564,10 +586,16 @@ def api_run_chat(
         combined_user_text, run_id, user["user_id"]
     )
     context_run = get_run(context_run_id, user_id=user["user_id"])
-    max_failures = int(os.environ.get("CHAT_RUN_MAX_FAILURES", "500"))
-    max_block_chars = int(os.environ.get("CHAT_RUN_DATA_MAX_CHARS", "120000"))
+    max_failures = int(os.environ.get("CHAT_RUN_MAX_FAILURES", "30"))
+    max_block_chars = int(os.environ.get("CHAT_RUN_DATA_MAX_CHARS", "6000"))
     failures = get_failures_by_run(context_run_id)
-    block = _format_failures_for_chat_detail(failures, max_items=max_failures)
+    prompt_failures = failures
+    if focus_failure_id is not None:
+        focused = [f for f in failures if int(f.get("_id", -1)) == focus_failure_id]
+        if focused:
+            prompt_failures = focused
+            max_failures = 1
+    block = _format_failures_for_chat_detail(prompt_failures, max_items=max_failures)
     block = _truncate_chat_data_block(block, max_block_chars)
     fname = (context_run or {}).get("filename") or "unknown"
     total_f = len(failures)
@@ -576,22 +604,10 @@ def api_run_chat(
         "You are DebugIQ's assistant for hardware verification and simulation/UVM logs. "
         "The user asked for run-grounded help: use ONLY the run metadata and failure records below.",
         f"The dashboard URL run is #{run_id}. The data below describes run #{context_run_id} "
-        f"(log file: {fname}; {total_f} failure row(s) in DB; up to {max_failures} included in this prompt).",
+        f"(log file: {fname}; {total_f} failure row(s) in DB; {len(prompt_failures[:max_failures])} included in this prompt).",
         "Answer using these records: quote failure ids, modules, severities, categories, and message/context text. "
         "Give concrete next steps tied to those lines. If something is not in the data, say so.",
     ]
-    if context_note:
-        system_parts.append(context_note)
-    system_parts.append(f"Run #{context_run_id} — full failure records:\n{block}")
-    system = "\n\n".join(system_parts)
-
-    msgs = [{"role": "system", "content": system}]
-    for turn in body.history[-20:]:
-        role = (turn.role or "").strip().lower()
-        if role not in {"user", "assistant"} or not (turn.content or "").strip():
-            continue
-        msgs.append({"role": role, "content": turn.content.strip()})
-    msgs.append({"role": "user", "content": body.message.strip()})
 
     try:
         reply = generate_llm_chat(msgs)
@@ -779,8 +795,18 @@ def get_dashboard(
         .to_dict(orient="records")
     )
 
-    # Build an adaptive timeline histogram so the chart is informative for both
-    # short and long logs (avoid mostly-flat count=1 lines).
+    def _timeline_by_row_index(n: int) -> List[Dict]:
+        target_bins = 24
+        bucket_size = max(1, (n + target_bins - 1) // target_bins)
+        idx_df = pd.DataFrame({"bucket": [i // bucket_size for i in range(n)]})
+        rows = idx_df.groupby("bucket").size().reset_index(name="count").to_dict(orient="records")
+        return [
+            {"time": f"part_{int(item['bucket']) + 1}", "count": int(item["count"])}
+            for item in rows
+        ]
+
+    # Build an adaptive timeline histogram. If timestamps collapse into one
+    # bucket, use log-order buckets so the chart still shows progression.
     ts_series = pd.to_datetime(df["timestamp"], errors="coerce")
     if ts_series.notna().any():
         sec = (ts_series.astype("int64") // 1_000_000_000).astype("int64")
@@ -800,19 +826,10 @@ def get_dashboard(
             failure_timeline["bucket"], unit="s"
         ).dt.strftime("%H:%M:%S")
         failure_timeline = failure_timeline[["time", "count"]].to_dict(orient="records")
+        if len(failure_timeline) <= 1 and len(df) > 1:
+            failure_timeline = _timeline_by_row_index(len(df))
     else:
-        # Fallback: monotonic bucket by parsed row index if timestamps are unusable.
-        n = len(df)
-        target_bins = 24
-        bucket_size = max(1, (n + target_bins - 1) // target_bins)
-        idx_df = pd.DataFrame({"bucket": [i // bucket_size for i in range(n)]})
-        failure_timeline = (
-            idx_df.groupby("bucket").size().reset_index(name="count").to_dict(orient="records")
-        )
-        failure_timeline = [
-            {"time": f"bucket_{int(item['bucket'])}", "count": int(item["count"])}
-            for item in failure_timeline
-        ]
+        failure_timeline = _timeline_by_row_index(len(df))
 
     root_cause_suggestions = []
     history = df.to_dict(orient="records")

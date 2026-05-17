@@ -99,15 +99,23 @@ def generate_llm_explanation(failure_context: dict) -> str:
     retrieved = retrieve_context(failure_context)
     retrieved_text = "\n".join(f"- {item}" for item in retrieved) or "- No matching retrieval snippets"
 
+    msg = str(failure_context.get('message', ''))
+    if len(msg) > 2000:
+        msg = msg[:2000] + "... [truncated]"
+        
+    ctx = str(failure_context.get('context', ''))
+    if len(ctx) > 3000:
+        ctx = ctx[:3000] + "... [truncated]"
+
     prompt = f"""
 Analyze the following system failure log and provide a concise root cause explanation and debugging steps.
 
 Failure ID: {failure_context.get('id')}
 Module: {failure_context.get('module')}
 Severity: {failure_context.get('severity')}
-Log Message: {failure_context.get('message')}
+Log Message: {msg}
 Category: {failure_context.get('category')}
-Context: {failure_context.get('context')}
+Context: {ctx}
 
 Retrieved Knowledge:
 {retrieved_text}
@@ -191,6 +199,25 @@ def generate_llm_chat(messages: List[Dict[str, str]]) -> str:
     """
     if not messages:
         raise ValueError("messages must be non-empty")
+
+    # Prevent massive token counts by truncating each message content
+    truncated_messages = []
+    for m in messages:
+        c = str(m.get("content", ""))
+        role = str(m.get("role", ""))
+        
+        # System prompt carries the failures block, allow it more space
+        max_len = 15000 if role == "system" else 2000
+        
+        if len(c) > max_len:
+            c = c[:max_len] + "\n...[truncated for length]"
+        
+        # Make a copy so we don't mutate the original dict
+        new_m = dict(m)
+        new_m["content"] = c
+        truncated_messages.append(new_m)
+    
+    messages = truncated_messages
 
     has_provider_key = False
     last_error = None

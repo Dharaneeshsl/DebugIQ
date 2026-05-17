@@ -33,6 +33,8 @@ const Dashboard = () => {
   const [runsOffset, setRunsOffset] = useState(0);
   const runsLimit = 8;
   const [chatOpen, setChatOpen] = useState(false);
+  const activeRun = runs.find((r) => String(r.id) === String(runId));
+  const activeRunName = runId ? activeRun?.filename || "Selected upload" : "No upload selected";
 
   useEffect(() => {
     if (!runId) {
@@ -264,8 +266,13 @@ const Dashboard = () => {
         </div>
 
         <div className="glass rounded-xl p-4 text-sm text-slate-300">
-          <div className="text-xs text-slate-500 mb-2">Run ID</div>
-          <div className="mono text-emerald-300">{runId ? `#${runId}` : "No run loaded"}</div>
+          <div className="text-xs text-slate-500 mb-2">Selected Upload</div>
+          <div className="text-emerald-300 font-medium truncate" title={activeRunName}>
+            {activeRunName}
+          </div>
+          {runId && (
+            <div className="mono text-[10px] text-slate-500 mt-1">Database ID {runId}</div>
+          )}
         </div>
 
         <div className="glass rounded-xl p-4 text-sm text-slate-300">
@@ -299,7 +306,7 @@ const Dashboard = () => {
             </button>
           </div>
           <p className="text-[10px] text-slate-500 mb-2 leading-snug">
-            # is the database run id (per upload), not row order. Use the log filename to tell uploads apart.
+            These are saved uploads. The small database ID is only for deep links.
           </p>
           {runsLoading && <div className="text-xs text-slate-500">Loading…</div>}
           {!runsLoading && runs.length === 0 && (
@@ -322,7 +329,7 @@ const Dashboard = () => {
                   </div>
                   <div className="flex items-center justify-between mt-1">
                     <span className="mono text-[10px] text-slate-500">
-                      Run id {r.id}
+                      ID {r.id}
                     </span>
                     <span className="text-[11px] text-slate-500">
                       {r.total_failures ?? 0} fails
@@ -363,7 +370,7 @@ const Dashboard = () => {
           <div className="flex flex-wrap items-center gap-3">
             <span className="px-3 py-1 rounded-full text-xs bg-emerald-400/10 text-emerald-300 border border-emerald-400/20">Live Analysis</span>
             <span className="px-3 py-1 rounded-full text-xs bg-slate-800 text-slate-300 border border-slate-700">
-              {runId ? `Run #${runId}` : "Awaiting Upload"}
+              {runId ? activeRunName : "Awaiting upload"}
             </span>
             {!chatOpen && (
               <button
@@ -621,6 +628,7 @@ const Dashboard = () => {
         open={chatOpen}
         onClose={() => setChatOpen(false)}
         runId={runId}
+        runName={activeRunName}
         selectedFailure={selected}
       />
       {!chatOpen && (

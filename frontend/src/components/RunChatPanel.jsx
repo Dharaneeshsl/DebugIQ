@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { postRunChat } from "../api/api";
 
-export default function RunChatPanel({ open, onClose, runId, selectedFailure }) {
+export default function RunChatPanel({ open, onClose, runId, runName, selectedFailure }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -67,9 +67,10 @@ export default function RunChatPanel({ open, onClose, runId, selectedFailure }) 
       <div className="flex shrink-0 items-center justify-between px-4 py-3 border-b border-slate-800">
         <div>
           <div className="text-xs text-emerald-400 uppercase tracking-wider">Run assistant</div>
-          <div className="text-sm font-medium text-slate-200">
-            {runId ? `Run #${runId}` : "No run loaded"}
+          <div className="text-sm font-medium text-slate-200 truncate max-w-[18rem]" title={runName || ""}>
+            {runId ? runName || "Selected upload" : "No upload selected"}
           </div>
+          {runId && <div className="mono text-[10px] text-slate-500">Database ID {runId}</div>}
         </div>
         <button
           type="button"
