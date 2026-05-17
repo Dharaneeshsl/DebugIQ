@@ -30,6 +30,20 @@ def _truncate_text(value: object, max_chars: int, label: str = "text") -> str:
         + f"\n...[{label} truncated to keep the LLM request within provider limits]"
     )
 
+
+def _is_provider_error_text(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "llm provider error",
+            "request too large",
+            "tokens per minute",
+            "rate_limit_exceeded",
+            "configured provider limit",
+        )
+    )
+
 def _build_retrieval_corpus() -> List[Dict[str, str]]:
     """
     Lightweight retrieval corpus for RAG grounding.
@@ -209,10 +223,14 @@ def generate_llm_chat(messages: List[Dict[str, str]]) -> str:
 
     # Prevent massive token counts by truncating each message content. Groq's
     # on-demand tier can be as low as 6k TPM, so keep defaults conservative.
+    total_limit = int(os.environ.get("LLM_CHAT_TOTAL_MAX_CHARS", "4500"))
+    used_chars = 0
     truncated_messages = []
     for m in messages:
         c = str(m.get("content", ""))
         role = str(m.get("role", ""))
+        if _is_provider_error_text(c):
+            continue
 
         if role == "system":
             max_len = int(os.environ.get("LLM_CHAT_SYSTEM_MAX_CHARS", "3500"))
@@ -220,6 +238,12 @@ def generate_llm_chat(messages: List[Dict[str, str]]) -> str:
             max_len = int(os.environ.get("LLM_CHAT_MESSAGE_MAX_CHARS", "900"))
 
         c = _truncate_text(c, max_len, "message")
+        remaining = total_limit - used_chars
+        if remaining <= 0:
+            break
+        if len(c) > remaining:
+            c = _truncate_text(c, remaining, "conversation")
+        used_chars += len(c)
         
         # Make a copy so we don't mutate the original dict
         new_m = dict(m)

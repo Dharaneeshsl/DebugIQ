@@ -575,6 +575,13 @@ def api_run_chat(
 
     from ml.explainability import generate_llm_chat
 
+    if _is_short_social_message(clean_last_msg):
+        return {
+            "reply": "Hi. Ask me about a failure id, module, severity pattern, or this run's top issues and I'll help you debug it.",
+            "context_run_id": None,
+            "chat_mode": "general",
+        }
+
     if use_general:
         system = (
             "You are DebugIQ's assistant for hardware verification, SystemVerilog, UVM, and SVA. "
@@ -582,7 +589,7 @@ def api_run_chat(
             "uploaded run or failure list—do not invent log lines, failure ids, or run-specific data."
         )
         msgs: List[Dict[str, str]] = [{"role": "system", "content": system}]
-        for turn in body.history[-20:]:
+        for turn in body.history[-6:]:
             role = (turn.role or "").strip().lower()
             if role not in {"user", "assistant"} or not (turn.content or "").strip():
                 continue
