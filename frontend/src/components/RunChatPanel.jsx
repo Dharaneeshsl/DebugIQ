@@ -8,6 +8,20 @@ export default function RunChatPanel({ open, onClose, runId, runName, selectedFa
   const [error, setError] = useState(null);
   const endRef = useRef(null);
 
+  const formatChatError = (detail, fallback) => {
+    const text = typeof detail === "string" ? detail : fallback || "Chat failed";
+    const lower = text.toLowerCase();
+    if (
+      lower.includes("request too large") ||
+      lower.includes("tokens per minute") ||
+      lower.includes("rate_limit_exceeded") ||
+      lower.includes("413")
+    ) {
+      return "The LLM request was too large for the current provider limit. Try asking about one specific failure, or redeploy with smaller chat limits.";
+    }
+    return text.length > 260 ? `${text.slice(0, 260)}...` : text;
+  };
+
   useEffect(() => {
     if (!open) return;
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -54,7 +68,7 @@ export default function RunChatPanel({ open, onClose, runId, runName, selectedFa
       setMessages((m) => [...m, { role: "assistant", content: out }]);
     } catch (err) {
       const d = err?.response?.data?.detail;
-      setError(typeof d === "string" ? d : err?.message || "Chat failed");
+      setError(formatChatError(d, err?.message));
     } finally {
       setLoading(false);
     }
@@ -114,7 +128,11 @@ export default function RunChatPanel({ open, onClose, runId, runName, selectedFa
             Thinking…
           </div>
         )}
-        {error && <div className="text-xs text-amber-400 break-words">{error}</div>}
+        {error && (
+          <div className="max-w-full rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-300 break-words [overflow-wrap:anywhere]">
+            {error}
+          </div>
+        )}
         <div ref={endRef} />
       </div>
       )}

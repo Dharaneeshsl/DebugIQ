@@ -294,6 +294,18 @@ def _to_dataframe(failures: List[Dict]) -> pd.DataFrame:
     return pd.DataFrame(failures)
 
 
+def _llm_error_detail(exc: Exception) -> str:
+    raw = str(exc)
+    if any(term in raw.lower() for term in ("request too large", "tokens per minute", "rate_limit_exceeded", "413")):
+        return (
+            "LLM request was too large for the configured provider limit. "
+            "Ask about a specific failure, or reduce CHAT_RUN_MAX_FAILURES / CHAT_RUN_DATA_MAX_CHARS."
+        )
+    if "No LLM provider key configured" in raw:
+        return raw
+    return "LLM provider failed. Check the configured API key, model, and provider limits."
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -363,7 +375,7 @@ def api_explain(
     try:
         explanation = generate_llm_explanation(failure_context)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"LLM provider error: {str(exc)}")
+        raise HTTPException(status_code=503, detail=_llm_error_detail(exc)) from exc
     
     features_list = []
     freq_map = {}
@@ -508,10 +520,10 @@ def _format_failures_for_chat_detail(failures: List[Dict], *, max_items: int) ->
         fid = f.get("_id")
         msg = str(f.get("message") or "")
         ctx = str(f.get("context") or "")
-        if len(msg) > 600:
-            msg = msg[:600] + "..."
-        if len(ctx) > 300:
-            ctx = ctx[:300] + "..."
+        if len(msg) > 300:
+            msg = msg[:300] + "... [message truncated]"
+        if len(ctx) > 160:
+            ctx = ctx[:160] + "... [context truncated]"
         lines.append(
             f"--- failure index {i + 1} | id={fid} ---\n"
             f"severity: {f.get('severity')}\n"
@@ -579,15 +591,15 @@ def api_run_chat(
         try:
             reply = generate_llm_chat(msgs)
         except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"LLM provider error: {str(exc)}") from exc
+            raise HTTPException(status_code=503, detail=_llm_error_detail(exc)) from exc
         return {"reply": reply, "context_run_id": None, "chat_mode": "general"}
 
     context_run_id, context_note = _resolve_chat_context_run_id(
         combined_user_text, run_id, user["user_id"]
     )
     context_run = get_run(context_run_id, user_id=user["user_id"])
-    max_failures = int(os.environ.get("CHAT_RUN_MAX_FAILURES", "30"))
-    max_block_chars = int(os.environ.get("CHAT_RUN_DATA_MAX_CHARS", "6000"))
+    max_failures = int(os.environ.get("CHAT_RUN_MAX_FAILURES", "8"))
+    max_block_chars = int(os.environ.get("CHAT_RUN_DATA_MAX_CHARS", "3000"))
     failures = get_failures_by_run(context_run_id)
     prompt_failures = failures
     if focus_failure_id is not None:
@@ -608,11 +620,22 @@ def api_run_chat(
         "Answer using these records: quote failure ids, modules, severities, categories, and message/context text. "
         "Give concrete next steps tied to those lines. If something is not in the data, say so.",
     ]
+    if context_note:
+        system_parts.append(context_note)
+    system_parts.append("Failure records:\n" + block)
+
+    msgs = [{"role": "system", "content": "\n\n".join(system_parts)}]
+    for turn in body.history[-8:]:
+        role = (turn.role or "").strip().lower()
+        if role not in {"user", "assistant"} or not (turn.content or "").strip():
+            continue
+        msgs.append({"role": role, "content": turn.content.strip()})
+    msgs.append({"role": "user", "content": clean_last_msg})
 
     try:
         reply = generate_llm_chat(msgs)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"LLM provider error: {str(exc)}") from exc
+        raise HTTPException(status_code=503, detail=_llm_error_detail(exc)) from exc
     return {"reply": reply, "context_run_id": context_run_id, "chat_mode": "run"}
 
 

@@ -20,6 +20,16 @@ except Exception:  # pragma: no cover
 
 import numpy as np
 
+
+def _truncate_text(value: object, max_chars: int, label: str = "text") -> str:
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    return (
+        text[:max_chars]
+        + f"\n...[{label} truncated to keep the LLM request within provider limits]"
+    )
+
 def _build_retrieval_corpus() -> List[Dict[str, str]]:
     """
     Lightweight retrieval corpus for RAG grounding.
@@ -99,13 +109,10 @@ def generate_llm_explanation(failure_context: dict) -> str:
     retrieved = retrieve_context(failure_context)
     retrieved_text = "\n".join(f"- {item}" for item in retrieved) or "- No matching retrieval snippets"
 
-    msg = str(failure_context.get('message', ''))
-    if len(msg) > 2000:
-        msg = msg[:2000] + "... [truncated]"
-        
-    ctx = str(failure_context.get('context', ''))
-    if len(ctx) > 3000:
-        ctx = ctx[:3000] + "... [truncated]"
+    msg_limit = int(os.environ.get("LLM_EXPLAIN_MESSAGE_MAX_CHARS", "900"))
+    ctx_limit = int(os.environ.get("LLM_EXPLAIN_CONTEXT_MAX_CHARS", "1200"))
+    msg = _truncate_text(failure_context.get("message", ""), msg_limit, "message")
+    ctx = _truncate_text(failure_context.get("context", ""), ctx_limit, "context")
 
     prompt = f"""
 Analyze the following system failure log and provide a concise root cause explanation and debugging steps.
@@ -200,17 +207,19 @@ def generate_llm_chat(messages: List[Dict[str, str]]) -> str:
     if not messages:
         raise ValueError("messages must be non-empty")
 
-    # Prevent massive token counts by truncating each message content
+    # Prevent massive token counts by truncating each message content. Groq's
+    # on-demand tier can be as low as 6k TPM, so keep defaults conservative.
     truncated_messages = []
     for m in messages:
         c = str(m.get("content", ""))
         role = str(m.get("role", ""))
-        
-        # System prompt carries the failures block, allow it more space
-        max_len = 15000 if role == "system" else 2000
-        
-        if len(c) > max_len:
-            c = c[:max_len] + "\n...[truncated for length]"
+
+        if role == "system":
+            max_len = int(os.environ.get("LLM_CHAT_SYSTEM_MAX_CHARS", "3500"))
+        else:
+            max_len = int(os.environ.get("LLM_CHAT_MESSAGE_MAX_CHARS", "900"))
+
+        c = _truncate_text(c, max_len, "message")
         
         # Make a copy so we don't mutate the original dict
         new_m = dict(m)
