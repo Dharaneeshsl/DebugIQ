@@ -82,7 +82,7 @@ def extract_module(text: str) -> str:
 
 def _normalize_severity(raw: str) -> str:
     upper = raw.upper()
-    return _UVM_SEV_MAP.get(upper, upper).replace("WARN", "WARNING")
+    return _UVM_SEV_MAP.get(upper, {"WARN": "WARNING", "CRITICAL": "FATAL"}.get(upper, upper))
 
 
 def _detect_failure_type(raw: str, is_sva: bool) -> str:

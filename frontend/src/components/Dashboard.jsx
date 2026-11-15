@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { getDashboard, getFailures, exportCSV, uploadLog, getExplanation, getRuns, logout, updateFailureStatus, deleteAllRuns } from "../api/api";
+import { getDashboard, getFailures, exportCSV, uploadLog, getExplanation, getRuns, logout, updateFailureStatus, deleteAllRuns, compareRuns, deleteRun } from "../api/api";
 import HealthScore from "./HealthScore";
 import CategoryDistribution from "./CategoryDistribution";
 import FailurePriorityTable from "./FailurePriorityTable";
@@ -31,12 +31,18 @@ const Dashboard = () => {
   const [runs, setRuns] = useState([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsOffset, setRunsOffset] = useState(0);
+  const [actionError, setActionError] = useState(null);
+  const [comparison, setComparison] = useState(null);
   const runsLimit = 8;
   const [chatOpen, setChatOpen] = useState(false);
   const activeRun = runs.find((r) => String(r.id) === String(runId));
   const activeRunName = runId ? activeRun?.filename || "Selected upload" : "No upload selected";
 
   useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    setComparison(null);
+    setLoading(true);
     if (!runId) {
       setDashboard({
         health_score: 0,
@@ -70,20 +76,23 @@ const Dashboard = () => {
           getDashboard(runId),
           getFailures(runId),
         ]);
+        if (cancelled) return;
         setDashboard(dashRes.data);
         setFailures(failRes.data);
         setSelected(failRes.data[0] || null);
       } catch (err) {
+          if (cancelled) return;
           if (err?.response?.status === 401) {
             navigate("/login");
             return;
           }
           setError(err?.response?.data?.detail || "Failed to load dashboard");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     fetchAll();
+    return () => { cancelled = true; };
   }, [runId]);
 
   useEffect(() => {
@@ -108,7 +117,7 @@ const Dashboard = () => {
     return () => {
       cancelled = true;
     };
-  }, [runsOffset]);
+  }, [runsOffset, runId]);
 
   useEffect(() => {
     if (!runId || !selected?.id) {
@@ -239,7 +248,7 @@ const Dashboard = () => {
         <div className="glass rounded-xl p-4">
           <div className="text-xs text-slate-400 mb-2">Reports</div>
           <button
-            onClick={() => runId && exportCSV(runId)}
+            onClick={async () => { try { await exportCSV(runId); } catch { setActionError("Could not download report. Please retry."); } }}
             className="w-full bg-emerald-500 hover:bg-emerald-400 text-sm px-3 py-2 rounded mb-2 disabled:opacity-50"
             disabled={!runId}
           >
@@ -357,17 +366,20 @@ const Dashboard = () => {
           </div>
         </div>
 
-        <div className="mt-auto text-xs text-slate-500">v2.0 Prototype</div>
+        <div className="mt-auto text-xs text-slate-500">DebugIQ v2.0</div>
       </aside>
 
       <main className="flex-1 px-6 py-6 lg:px-10">
         <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
           <div>
-            <div className="text-xs text-slate-400 uppercase tracking-[0.2em] mono">Prototype</div>
+            <div className="text-xs text-slate-400 uppercase tracking-[0.2em] mono">Log Intelligence</div>
             <h1 className="text-3xl font-semibold">DebugIQ Priority Dashboard</h1>
             <p className="text-slate-400 text-sm mt-1">AI-ranked failures, clustered by root cause.</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            <Link to="/upload" className="text-sm text-emerald-300">Upload log</Link>
+            {runId && <button className="text-sm text-slate-300" onClick={async () => { try { await exportCSV(runId); } catch { setActionError("Could not download report."); } }}>Export CSV</button>}
+            <button className="text-sm text-slate-400" onClick={async () => { try { await logout(); } catch { /* Clear the local session even when the server is unavailable. */ } finally { localStorage.removeItem("debugiq_token"); navigate("/login"); } }}>Sign out</button>
             <span className="px-3 py-1 rounded-full text-xs bg-emerald-400/10 text-emerald-300 border border-emerald-400/20">Live Analysis</span>
             <span className="px-3 py-1 rounded-full text-xs bg-slate-800 text-slate-300 border border-slate-700">
               {runId ? activeRunName : "Awaiting upload"}
@@ -384,6 +396,25 @@ const Dashboard = () => {
             )}
           </div>
         </header>
+
+        {actionError && <p role="alert" className="text-red-400 mb-4">{actionError}</p>}
+        {!runId && <div className="glass rounded-xl p-6 mb-6"><h2 className="text-lg">Start with a simulation log</h2><p className="text-slate-400 mt-2">Upload a .log, .txt, or .gz file to inspect failures and prioritize your next debugging steps.</p><Link to="/upload" className="inline-block mt-4 text-emerald-300">Upload your first log →</Link></div>}
+        <div className="flex flex-wrap items-center gap-3 mb-6">
+          <label className="text-sm text-slate-400" htmlFor="run-picker">Saved uploads</label>
+          <select id="run-picker" className="bg-slate-900 border border-slate-700 rounded p-2 max-w-full" value={runId || ""} onChange={e => e.target.value && navigate(`/dashboard/${e.target.value}`)}>
+            <option value="">Select an upload</option>
+            {runId && !runs.some(r => String(r.id) === runId) && <option value={runId}>Current run #{runId}</option>}
+            {runs.map(r => <option key={r.id} value={r.id}>{r.filename} (#{r.id})</option>)}
+          </select>
+          <button className="text-xs text-slate-400 disabled:opacity-40" disabled={runsOffset === 0 || runsLoading} onClick={() => setRunsOffset(offset => Math.max(0, offset - runsLimit))}>Previous uploads</button>
+          <button className="text-xs text-slate-400 disabled:opacity-40" disabled={runs.length < runsLimit || runsLoading} onClick={() => setRunsOffset(offset => offset + runsLimit)}>More uploads</button>
+          {runId && <select aria-label="Compare with earlier run" className="bg-slate-900 border border-slate-700 rounded p-2 max-w-full" defaultValue="" key={runId} onChange={async e => { if (!e.target.value) { setComparison(null); return; } try { const res = await compareRuns(e.target.value, runId); setComparison(res.data); } catch { setActionError("Could not compare uploads."); } }}>
+            <option value="">Compare with…</option>
+            {runs.filter(r => String(r.id) !== runId).map(r => <option key={r.id} value={r.id}>{r.filename} (#{r.id})</option>)}
+          </select>}
+          {runId && <button className="text-sm text-red-400" onClick={async () => { if (!window.confirm("Delete this upload and its failures?")) return; try { await deleteRun(runId); navigate("/dashboard"); } catch { setActionError("Could not delete upload."); } }}>Delete upload</button>}
+        </div>
+        {comparison && <p className="glass rounded-xl p-4 mb-6">Compared with run #{comparison.run_a}: {comparison.new_in_b_count} new, {comparison.recurring_count} recurring, {comparison.resolved_in_b_count} resolved failure patterns.</p>}
 
         <section className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
           <HealthScore score={dashboard.health_score} />

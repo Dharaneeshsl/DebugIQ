@@ -48,6 +48,7 @@ class DedupEngine:
         unique_ids: List[int] = []
         is_duplicate: List[bool] = []
         unique_embeddings: List[np.ndarray] = []
+        representative_ids: List[int] = []
 
         next_id = 1
         lsh_ids, lsh_dup = self.lsh.process_logs(messages)
@@ -55,6 +56,7 @@ class DedupEngine:
         for idx, emb in enumerate(embeddings):
             if not unique_embeddings:
                 unique_embeddings.append(emb)
+                representative_ids.append(next_id)
                 unique_ids.append(next_id)
                 is_duplicate.append(False)
                 next_id += 1
@@ -66,7 +68,7 @@ class DedupEngine:
                 cand_idx = min(cand_idx, len(unique_embeddings) - 1)
                 sim = self._cosine_sim(unique_embeddings[cand_idx], emb)
                 if sim >= self.config.similarity_threshold:
-                    unique_ids.append(unique_ids[cand_idx])
+                    unique_ids.append(representative_ids[cand_idx])
                     is_duplicate.append(True)
                     continue
 
@@ -76,10 +78,11 @@ class DedupEngine:
             max_sim = float(sims[max_idx])
 
             if max_sim >= self.config.similarity_threshold:
-                unique_ids.append(unique_ids[max_idx])
+                unique_ids.append(representative_ids[max_idx])
                 is_duplicate.append(True)
             else:
                 unique_embeddings.append(emb)
+                representative_ids.append(next_id)
                 unique_ids.append(next_id)
                 is_duplicate.append(False)
                 next_id += 1

@@ -1,4 +1,5 @@
 import os
+from runtime_config import external_ai_allowed
 from typing import Dict, List
 
 try:
@@ -120,6 +121,8 @@ def retrieve_context(failure_context: dict, k: int = 2) -> List[str]:
 
 
 def generate_llm_explanation(failure_context: dict) -> str:
+    if not external_ai_allowed():
+        raise RuntimeError("External AI is disabled by the installation privacy policy")
     retrieved = retrieve_context(failure_context)
     retrieved_text = "\n".join(f"- {item}" for item in retrieved) or "- No matching retrieval snippets"
 
@@ -218,6 +221,8 @@ def generate_llm_chat(messages: List[Dict[str, str]]) -> str:
     Multi-turn chat completion using the same provider stack as generate_llm_explanation.
     `messages` items must be dicts with keys role and content (OpenAI-style).
     """
+    if not external_ai_allowed():
+        raise RuntimeError("External AI is disabled by the installation privacy policy")
     if not messages:
         raise ValueError("messages must be non-empty")
 

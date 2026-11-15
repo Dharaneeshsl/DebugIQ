@@ -12,7 +12,7 @@ QUEUE_NAME = "debugiq_uploads"
 
 
 def _consume_forever() -> None:
-    rabbit_url = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
+    rabbit_url = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
     params = pika.URLParameters(rabbit_url)
 
     connection = pika.BlockingConnection(params)
@@ -30,6 +30,10 @@ def _consume_forever() -> None:
 
         job = get_upload_job(job_id)
         if not job:
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            return
+
+        if job["status"] == "completed":
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 

@@ -32,8 +32,10 @@ const Login = () => {
 
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
           <div>
-            <label className="block text-sm text-slate-300 mb-2">Username</label>
+            <label htmlFor="login-username" className="block text-sm text-slate-300 mb-2">Username</label>
             <input
+              id="login-username"
+              required
               className="w-full bg-slate-900/40 border border-slate-700 rounded px-3 py-2 text-slate-200"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -41,8 +43,10 @@ const Login = () => {
             />
           </div>
           <div>
-            <label className="block text-sm text-slate-300 mb-2">Password</label>
+            <label htmlFor="login-password" className="block text-sm text-slate-300 mb-2">Password</label>
             <input
+              id="login-password"
+              required
               type="password"
               className="w-full bg-slate-900/40 border border-slate-700 rounded px-3 py-2 text-slate-200"
               value={password}

@@ -1,14 +1,23 @@
-import { useCallback, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { uploadLog } from "../api/api";
 
 const LogUpload = () => {
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const uploading = useRef(false);
   const navigate = useNavigate();
 
   const handleUpload = async (file) => {
+    if (uploading.current) return;
+    if (!/\.(log|txt|gz)$/i.test(file.name) || !file.size || file.size > 20 * 1024 * 1024) {
+      setError("Choose a non-empty .log, .txt, or .gz file up to 20 MB.");
+      return;
+    }
+    uploading.current = true;
+    setBusy(true);
     setError(null);
     setProgress(0);
     try {
@@ -20,15 +29,18 @@ const LogUpload = () => {
         return;
       }
       setError(err?.response?.data?.detail || "Upload failed");
+    } finally {
+      uploading.current = false;
+      setBusy(false);
     }
   };
 
-  const onDrop = useCallback((evt) => {
+  const onDrop = (evt) => {
     evt.preventDefault();
     setDragging(false);
     const file = evt.dataTransfer.files?.[0];
     if (file) handleUpload(file);
-  }, []);
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center px-6">
@@ -50,13 +62,14 @@ const LogUpload = () => {
         >
           <input
             type="file"
+            disabled={busy}
             accept=".log,.txt,.gz"
-            onChange={(e) => e.target.files?.[0] && handleUpload(e.target.files[0])}
+            onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) handleUpload(file); }}
             className="hidden"
             id="file-input"
           />
           <label htmlFor="file-input" className="cursor-pointer">
-            <div className="text-lg font-medium">Drag & drop or click to select</div>
+            <div className="text-lg font-medium">{busy ? "Analyzing your log…" : "Drag & drop or click to select"}</div>
             <div className="text-slate-400 text-sm mt-1">Supports .log, .txt, .gz</div>
           </label>
         </div>
@@ -70,7 +83,8 @@ const LogUpload = () => {
           </div>
         )}
 
-        {error && <div className="mt-4 text-red-400 text-sm">{error}</div>}
+        {error && <div role="alert" className="mt-4 text-red-400 text-sm">{error}</div>}
+        <Link to="/dashboard" className="inline-block mt-6 text-sm text-slate-400">Back to dashboard</Link>
       </div>
     </div>
   );

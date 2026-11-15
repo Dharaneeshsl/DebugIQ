@@ -36,6 +36,12 @@ def _get_client() -> MongoClient:
 
 
 def _db():
+    storage = os.environ.get("DEBUGIQ_STORAGE", "").strip().lower()
+    if storage == "sqlite" or (not storage and not (os.environ.get("MONGO_URI") or os.environ.get("MONGODB_URI"))):
+        from local_store import LocalDatabase
+        return LocalDatabase()
+    if storage not in {"", "mongo"}:
+        raise RuntimeError("DEBUGIQ_STORAGE must be sqlite or mongo")
     db_name = os.environ.get("MONGO_DB_NAME", "debugiq").strip() or "debugiq"
     return _get_client()[db_name]
 
@@ -250,6 +256,7 @@ def delete_run(run_id: int, *, user_id: int | None = None) -> None:
         return
     _db()["runs"].delete_one({"_id": run_id})
     _db()["failures"].delete_many({"run_id": run_id})
+    _db()["upload_jobs"].delete_many({"run_id": run_id})
 
 
 def delete_all_runs_for_user(*, user_id: int) -> dict:
@@ -350,6 +357,12 @@ def set_upload_job_status(
     _db()["upload_jobs"].update_one({"_id": job_id}, {"$set": update})
 
 
+def fail_interrupted_local_jobs() -> None:
+    """A local process cannot resume in-flight tasks after restarting."""
+    for job in _db()["upload_jobs"].find({"status": {"$in": ["queued", "processing"]}}):
+        set_upload_job_status(job["_id"], "failed", error="Analysis interrupted by an API restart. Please upload the log again.")
+
+
 def revoke_token(jti: str, exp_ts: int) -> None:
     expires_at = datetime.utcfromtimestamp(int(exp_ts))
     _db()["revoked_tokens"].update_one(
@@ -363,4 +376,4 @@ def is_token_revoked(jti: str) -> bool:
     if not jti:
         return False
     doc = _db()["revoked_tokens"].find_one({"_id": jti})
-    return doc is not None
+    return doc is not None and doc["expires_at"] > datetime.utcnow()

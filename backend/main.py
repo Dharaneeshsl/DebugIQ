@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends, status
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from typing import List, Dict, Optional
@@ -10,7 +10,11 @@ import gzip
 import os
 import re
 import pandas as pd
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from pymongo.errors import DuplicateKeyError
+from runtime_config import production, validate_production
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sklearn.decomposition import PCA
 from dotenv import load_dotenv
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -21,6 +25,7 @@ from slowapi.errors import RateLimitExceeded
 from prometheus_fastapi_instrumentator import Instrumentator
 import time
 import uuid
+import secrets
 import jwt
 import pika
 
@@ -66,12 +71,27 @@ from mongo_store import (
     set_weights,
     revoke_token,
     is_token_revoked,
+    fail_interrupted_local_jobs,
 )
 
 # Load env from backend/.env explicitly (works regardless of cwd)
 load_dotenv(dotenv_path=(Path(__file__).resolve().parent / ".env"))
 
-SECRET_KEY = os.environ.get("DEBUGIQ_JWT_SECRET", "debugiq_dev_only_secret_change_me")
+def _jwt_secret():
+    configured = os.environ.get("DEBUGIQ_JWT_SECRET")
+    if configured:
+        return configured
+    secret_path = Path(__file__).parent / "data" / "jwt-secret"
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with secret_path.open("x", encoding="utf-8") as secret_file:
+            secret_file.write(secrets.token_urlsafe(48))
+    except FileExistsError:
+        pass
+    return secret_path.read_text(encoding="utf-8").strip()
+
+
+SECRET_KEY = _jwt_secret()
 ALGORITHM = "HS256"
 ADMIN_USERNAME = os.environ.get("DEBUGIQ_ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("DEBUGIQ_ADMIN_PASSWORD", "admin123")
@@ -79,41 +99,70 @@ ADMIN_PASSWORD = os.environ.get("DEBUGIQ_ADMIN_PASSWORD", "admin123")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_production()
+    if production() and os.getenv("DEBUGIQ_SERVE_UI", "true") == "true" and not (Path(__file__).parents[1] / "frontend/dist/index.html").is_file():
+        raise RuntimeError("Build the frontend before starting the production server")
     init_mongo()
+    if production():
+        existing_admin = get_user_by_username(ADMIN_USERNAME)
+        if existing_admin and verify_password("admin123", existing_admin["password_hash"]):
+            raise RuntimeError("The existing demo administrator must not be used in production; provision a separate production database")
+    if not os.environ.get("RABBITMQ_URL"):
+        fail_interrupted_local_jobs()
     # Seed a single fixed admin if none exists.
     if not admin_exists():
         try:
             create_user(ADMIN_USERNAME, hash_password(ADMIN_PASSWORD), "admin")
             logger.info("Seeded initial admin user from environment.")
-        except Exception as exc:
-            logger.warning("Failed to seed admin user: %s", exc)
+        except DuplicateKeyError:
+            logger.info("Admin account already created by another process")
     yield
 
 
-app = FastAPI(title="DebugIQ API", lifespan=lifespan)
+app = FastAPI(title="DebugIQ API", lifespan=lifespan, docs_url=None if production() else "/docs", redoc_url=None if production() else "/redoc", openapi_url=None if production() else "/openapi.json")
 
 _cors_origins_env = os.environ.get("CORS_ALLOWED_ORIGINS", "")
 _extra_origins = [origin.strip() for origin in _cors_origins_env.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
+    allow_origins=(_extra_origins if production() else [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
         *_extra_origins,
-    ],
+    ]),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("DEBUGIQ_RATE_LIMIT_STORAGE", "memory://"))
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-Instrumentator().instrument(app).expose(app)
+Instrumentator().instrument(app)
+if not production():
+    Instrumentator().expose(app)
+
+
+@app.middleware("http")
+async def request_observability(request: Request, call_next):
+    if production() and request.scope["path"].startswith("/api/"):
+        request.scope["path"] = request.scope["path"][4:]
+        request.scope["raw_path"] = request.scope["path"].encode("utf-8")
+    request_id = str(uuid.uuid4())
+    started = time.monotonic()
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["X-Frame-Options"] = "DENY"
+    if production():
+        response.headers["Cache-Control"] = "no-store"
+        logger.info("request_id={} method={} status={} elapsed_ms={:.0f}", request_id, request.method, response.status_code, (time.monotonic() - started) * 1000)
+    return response
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -123,9 +172,9 @@ def create_access_token(data: dict):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 class SignupRequest(BaseModel):
-    username: str
-    password: str
-    role: str  # admin | user
+    username: str = Field(min_length=3, max_length=100, pattern=r"^\S+$")
+    password: str = Field(min_length=8, max_length=256)
+    role: str = "user"
 
 @app.get("/auth/admin-exists")
 def auth_admin_exists():
@@ -134,6 +183,8 @@ def auth_admin_exists():
 @app.post("/signup")
 @limiter.limit("10/minute")
 def signup(request: Request, payload: SignupRequest):
+    if production():
+        raise HTTPException(status_code=403, detail="Contact your administrator to create an account")
     role = payload.role.strip().lower()
     if role not in {"admin", "user"}:
         raise HTTPException(status_code=400, detail="Invalid role")
@@ -143,7 +194,10 @@ def signup(request: Request, payload: SignupRequest):
     if role == "admin" and admin_exists():
         raise HTTPException(status_code=400, detail="Admin already exists")
 
-    user = create_user(payload.username, hash_password(payload.password), role)
+    try:
+        user = create_user(payload.username, hash_password(payload.password), role)
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail="Username already exists") from exc
 
     token = create_access_token({"sub": user["username"], "role": user["role"]})
     return {"access_token": token, "token_type": "bearer", "role": user["role"]}
@@ -175,14 +229,13 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username = payload.get("sub")
-        role = payload.get("role", "user")
         jti = payload.get("jti")
         if jti and is_token_revoked(jti):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
         user = get_user_by_username(username) if username else None
         if not user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-        return {"username": username, "role": role, "user_id": user["_id"]}
+        return {"username": username, "role": user["role"], "user_id": user["_id"]}
     except jwt.PyJWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
@@ -222,8 +275,8 @@ RECOMMEND_MAP = {
 }
 
 class DeduplicateRequest(BaseModel):
-    logs: List[str]
-    similarity_threshold: Optional[float] = None
+    logs: List[str] = Field(max_length=10000)
+    similarity_threshold: Optional[float] = Field(default=None, ge=0, le=1)
 
 class FeedbackItem(BaseModel):
     severity: str
@@ -247,19 +300,29 @@ class RunChatTurn(BaseModel):
 
 
 class RunChatRequest(BaseModel):
-    message: str
-    history: List[RunChatTurn] = []
+    message: str = Field(min_length=1, max_length=4000)
+    history: List[RunChatTurn] = Field(default_factory=list, max_length=30)
 
 
 def _read_upload(upload: UploadFile) -> str:
     if not upload.filename:
         raise HTTPException(status_code=400, detail="No file provided")
-    raw = upload.file.read()
-    if upload.filename.endswith(".gz"):
+    if not upload.filename.lower().endswith((".log", ".txt", ".gz")):
+        raise HTTPException(status_code=400, detail="Choose a .log, .txt, or .gz file")
+    maximum = int(os.environ.get("DEBUGIQ_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+    raw = upload.file.read(maximum + 1)
+    if len(raw) > maximum:
+        raise HTTPException(status_code=413, detail="Log exceeds the upload size limit")
+    if upload.filename.lower().endswith(".gz"):
         try:
-            raw = gzip.decompress(raw)
-        except OSError as exc:
+            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
+                raw = compressed.read(maximum + 1)
+        except (OSError, EOFError) as exc:
             raise HTTPException(status_code=400, detail="Invalid gzip file") from exc
+    if len(raw) > maximum:
+        raise HTTPException(status_code=413, detail="Expanded log exceeds the upload size limit")
+    if not raw.strip():
+        raise HTTPException(status_code=400, detail="Log file is empty")
     try:
         return raw.decode("utf-8", errors="ignore")
     except Exception as exc:
@@ -274,17 +337,21 @@ def _publish_upload_job(job_id: int) -> None:
     Enqueue a log-processing job to RabbitMQ.
     Worker consumes from `QUEUE_NAME`.
     """
-    rabbit_url = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
+    rabbit_url = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
     params = pika.URLParameters(rabbit_url)
+    params.socket_timeout = 5
+    params.blocked_connection_timeout = 5
     connection = pika.BlockingConnection(params)
     try:
         channel = connection.channel()
+        channel.confirm_delivery()
         channel.queue_declare(queue=QUEUE_NAME, durable=True)
         channel.basic_publish(
             exchange="",
             routing_key=QUEUE_NAME,
             body=str(job_id).encode("utf-8"),
             properties=pika.BasicProperties(delivery_mode=2),
+            mandatory=True,
         )
     finally:
         connection.close()
@@ -311,6 +378,16 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/ready")
+def readiness():
+    from mongo_store import _db
+    try:
+        _db()["settings"].find_one({"_id": "readiness"})
+    except Exception:
+        raise HTTPException(status_code=503, detail="Storage is unavailable")
+    return {"status": "ready"}
+
+
 @app.get("/root-cause/{run_id}/{failure_id}")
 @limiter.limit("40/minute")
 def api_root_cause(
@@ -323,7 +400,9 @@ def api_root_cause(
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     failures = get_failures_by_run(run_id)
-        
+    if not any(f["_id"] == failure_id for f in failures):
+        raise HTTPException(status_code=404, detail="Failure not found")
+
     failures_list = [{
         "id": f["_id"],
         "timestamp": f.get("timestamp"),
@@ -372,10 +451,18 @@ def api_explain(
         "context": target_failure.get("context"),
     }
 
+    explanation_source = "provider"
     try:
         explanation = generate_llm_explanation(failure_context)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=_llm_error_detail(exc)) from exc
+        explanation_source = "local_rules"
+        explanation = (
+            "Local rule-based guidance (hypothesis, not a confirmed root cause).\n\n"
+            + ROOT_CAUSE_MAP.get(target_failure.get("category"), "Inspect the failure message and surrounding log context.")
+            + "\n\nNext step: "
+            + RECOMMEND_MAP.get(target_failure.get("category"), "Trace the first unexpected event and compare with a passing run.")
+            + f"\n\nEvidence: {target_failure.get('message', '')}"
+        )
     
     features_list = []
     freq_map = {}
@@ -400,6 +487,7 @@ def api_explain(
     return {
         "failure_id": failure_id,
         "llm_explanation": explanation,
+        "source": explanation_source,
         "shap_importance": shap_importance
     }
 
@@ -598,7 +686,9 @@ def api_run_chat(
         try:
             reply = generate_llm_chat(msgs)
         except Exception as exc:
-            raise HTTPException(status_code=503, detail=_llm_error_detail(exc)) from exc
+            reply = ("Local assistant: select a failure or ask for this run's summary, modules, or top issues to inspect your uploaded evidence. "
+                     "For general verification questions, configure an AI provider. Start debugging at the earliest failing event, "
+                     "check its assertion or protocol condition, and compare signal timing with a passing test.")
         return {"reply": reply, "context_run_id": None, "chat_mode": "general"}
 
     context_run_id, context_note = _resolve_chat_context_run_id(
@@ -642,7 +732,17 @@ def api_run_chat(
     try:
         reply = generate_llm_chat(msgs)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=_llm_error_detail(exc)) from exc
+        ranked = sorted(prompt_failures, key=lambda f: f.get("priority_score", 0), reverse=True)
+        lines = [f"Local analysis of run #{context_run_id} ({fname}): {total_f} recorded failures."]
+        if "module" in clean_last_msg.lower():
+            from collections import Counter
+            lines.extend(f"{module}: {count} failures" for module, count in Counter(f.get("module") for f in failures).most_common())
+        else:
+            for failure in ranked[:5]:
+                lines.append(f"Failure #{failure['_id']} | {failure.get('severity')} | {failure.get('module')}: {failure.get('message')}")
+                lines.append("Next step: " + RECOMMEND_MAP.get(failure.get("category"), "Inspect surrounding log context and compare with a passing test."))
+        lines.append("This is a rule-based evidence summary. Root-cause suggestions need validation against signals and testbench behavior.")
+        reply = "\n\n".join(lines)
     return {"reply": reply, "context_run_id": context_run_id, "chat_mode": "run"}
 
 
@@ -674,7 +774,11 @@ def api_prioritize(
     req: PrioritizeRequest,
     user: str = Depends(get_current_user),
 ):
-    data = [item.dict() for item in req.feedback]
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can change scoring weights")
+    if not req.feedback:
+        raise HTTPException(status_code=400, detail="Provide feedback to optimize scoring")
+    data = [item.model_dump() for item in req.feedback]
     new_weights = optimize_weights(data)
     set_weights(new_weights)
     ranked = prioritize_failures(data)
@@ -699,19 +803,34 @@ def upload_log(
 @limiter.limit("5/minute")
 def upload_log_async(
     request: Request,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     user: str = Depends(get_current_user),
 ):
     text = _read_upload(file)
     job = create_upload_job(file.filename or "upload.log", text, user_id=user["user_id"])
-    try:
-        _publish_upload_job(job["_id"])
-    except Exception as exc:
-        logger.warning(
-            "RabbitMQ publish failed (job queued in DB, worker may not be running): %s",
-            exc,
-        )
+    if os.environ.get("RABBITMQ_URL"):
+        try:
+            _publish_upload_job(job["_id"])
+        except Exception as exc:
+            set_upload_job_status(job["_id"], "failed", error="Job queue unavailable; retry the upload")
+            raise HTTPException(status_code=503, detail="Job queue unavailable; use synchronous upload or retry") from exc
+    else:
+        background_tasks.add_task(_process_local_job, job["_id"])
     return {"job_id": job["_id"]}
+
+
+def _process_local_job(job_id: int):
+    job = get_upload_job(job_id)
+    if not job or job["status"] == "completed":
+        return
+    set_upload_job_status(job_id, "processing")
+    try:
+        result = process_log_text(job["raw_logs_text"], job["filename"], user_id=job["user_id"])
+        set_upload_job_status(job_id, "completed", run_id=result["run_id"])
+    except Exception:
+        logger.exception("Local upload job failed")
+        set_upload_job_status(job_id, "failed", error="Analysis failed; check log format and retry")
 
 
 @app.get("/job-status/{job_id}")
@@ -734,8 +853,8 @@ async def debug_upload(
     file: UploadFile = File(...),
     user: str = Depends(get_current_user),
 ):
-    content = await file.read()
-    text = content.decode("utf-8", errors="ignore")
+    text = _read_upload(file)
+    content = text.encode("utf-8")
     lines = text.splitlines()
     return {
         "total_lines": len(lines),
@@ -818,6 +937,7 @@ def get_dashboard(
 
     priority_ranking = (
         df.sort_values("priority_score", ascending=False)
+        .drop_duplicates(subset=["unique_failure_id"])
         .assign(rank=lambda d: range(1, len(d) + 1))
         [["rank", "severity", "module", "category", "priority_score", "unique_failure_id"]]
         .rename(columns={"priority_score": "score"})
@@ -837,9 +957,13 @@ def get_dashboard(
 
     # Build an adaptive timeline histogram. If timestamps collapse into one
     # bucket, use log-order buckets so the chart still shows progression.
-    ts_series = pd.to_datetime(df["timestamp"], errors="coerce")
+    ts_series = pd.to_timedelta(df["timestamp"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+    # The parser's legacy midnight placeholder is not an observed timestamp.
+    # Keep untimed assertion lines out of the clock histogram.
+    has_clock = df["message"].fillna("").str.contains(r"\b\d{2}:\d{2}:\d{2}", regex=True)
+    ts_series = ts_series.where(has_clock)
     if ts_series.notna().any():
-        sec = (ts_series.astype("int64") // 1_000_000_000).astype("int64")
+        sec = ts_series.dropna().dt.total_seconds().astype("int64")
         sec_min = int(sec.min())
         sec_max = int(sec.max())
         span = max(sec_max - sec_min + 1, 1)
@@ -856,8 +980,11 @@ def get_dashboard(
             failure_timeline["bucket"], unit="s"
         ).dt.strftime("%H:%M:%S")
         failure_timeline = failure_timeline[["time", "count"]].to_dict(orient="records")
-        if len(failure_timeline) <= 1 and len(df) > 1:
+        if len(failure_timeline) <= 1 and len(sec) == len(df) and len(df) > 1:
             failure_timeline = _timeline_by_row_index(len(df))
+        missing_count = int(ts_series.isna().sum())
+        if missing_count:
+            failure_timeline.append({"time": "No timestamp", "count": missing_count})
     else:
         failure_timeline = _timeline_by_row_index(len(df))
 
@@ -898,10 +1025,8 @@ def get_dashboard(
     else:
         mttr_hours = None
 
-    status_breakdown = (
-        df["status"].fillna("open").value_counts().reset_index().rename(columns={"index": "status", "status": "count"})
-        .to_dict(orient="records")
-    )
+    status_breakdown = [{"status": key, "count": int(value)}
+                        for key, value in df["status"].fillna("open").value_counts().items()]
 
     trend_vs_prev_run = None
     all_runs = get_runs(user_id=user["user_id"])
@@ -1191,6 +1316,27 @@ def export_report(
     } for f in failures])
 
     buffer = io.StringIO()
+    # Prevent spreadsheet programs from interpreting uploaded text as formulas.
+    for column in df.columns:
+        df[column] = df[column].map(lambda value: "'" + value if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")) else value)
     df.to_csv(buffer, index=False)
     buffer.seek(0)
-    return StreamingResponse(buffer, media_type="text/csv")
+    return StreamingResponse(buffer, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="debugiq-run-{run_id}.csv"'})
+
+
+# Serve the built dashboard from the API process; no development server required.
+_ui_root = Path(__file__).parents[1] / "frontend" / "dist"
+if (_ui_root / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=_ui_root / "assets"), name="assets")
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/login", include_in_schema=False)
+@app.get("/signup", include_in_schema=False)
+@app.get("/upload", include_in_schema=False)
+@app.get("/dashboard", include_in_schema=False)
+@app.get("/dashboard/{ui_run_id}", include_in_schema=False)
+def dashboard_page(ui_run_id: str = ""):
+    if not (_ui_root / "index.html").is_file():
+        raise HTTPException(status_code=404, detail="Dashboard build is not installed")
+    return FileResponse(_ui_root / "index.html")

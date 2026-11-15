@@ -46,7 +46,7 @@ _tfidf_skip_logged = False
 
 def _force_tfidf_semantic_categorization() -> bool:
     """Match nlp/embeddings.py: skip sentence-transformers when offline/fast path requested."""
-    b = os.environ.get("DEBUGIQ_EMBEDDINGS_BACKEND", "").strip().lower()
+    b = os.environ.get("DEBUGIQ_EMBEDDINGS_BACKEND", "tfidf").strip().lower()
     return b in {"tfidf", "hash"}
 
 

@@ -31,7 +31,7 @@ _UVM_SEV_MAP = {
 
 def _normalize_severity(raw: str) -> str:
     upper = raw.upper()
-    return _UVM_SEV_MAP.get(upper, upper)
+    return _UVM_SEV_MAP.get(upper, {"WARN": "WARNING", "CRITICAL": "FATAL"}.get(upper, upper))
 
 
 def _detect_failure_type(raw: str, is_sva: bool) -> str:
@@ -49,7 +49,7 @@ def extract_failures(lines: List[str]) -> List[ExtractedFailure]:
     failures = []
     
     sev_pattern = re.compile(
-        r"\b(FATAL|ERROR|WARNING|CRITICAL|UVM_FATAL|UVM_ERROR|UVM_WARNING|UVM_INFO)\b",
+        r"\b(FATAL|ERROR|WARNING|WARN|CRITICAL|UVM_FATAL|UVM_ERROR|UVM_WARNING|UVM_INFO)\b",
         re.IGNORECASE,
     )
     sva_pattern = re.compile(r"\b(ASSERTION FAILED|SVA ERROR|SVA FAILURE|SVA ASSERTION)\b", re.IGNORECASE)

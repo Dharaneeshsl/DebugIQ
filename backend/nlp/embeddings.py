@@ -53,7 +53,11 @@ def _tfidf_fallback_embeddings(texts: List[str], max_features: int = 512) -> np.
     if TfidfVectorizer is None or sk_normalize is None:
         raise ImportError("scikit-learn is required for TF-IDF fallback embeddings")
     vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=max_features)
-    matrix = vectorizer.fit_transform(texts)
+    try:
+        matrix = vectorizer.fit_transform(texts)
+    except ValueError:
+        vectorizer = TfidfVectorizer(analyzer="char", ngram_range=(1, 3), max_features=max_features)
+        matrix = vectorizer.fit_transform([text.strip() or "<empty>" for text in texts])
     return sk_normalize(matrix).toarray()
 
 def generate_embeddings(texts: List[str], config: Optional[EmbeddingConfig] = None) -> np.ndarray:
@@ -63,7 +67,7 @@ def generate_embeddings(texts: List[str], config: Optional[EmbeddingConfig] = No
     if not texts:
         return np.array([])
     
-    backend_override = os.environ.get("DEBUGIQ_EMBEDDINGS_BACKEND", "").strip().lower()
+    backend_override = os.environ.get("DEBUGIQ_EMBEDDINGS_BACKEND", "tfidf").strip().lower()
     if backend_override in {"tfidf", "hash"}:
         logger.warning("DEBUGIQ_EMBEDDINGS_BACKEND=%s set; using TF-IDF fallback.", backend_override)
         return _tfidf_fallback_embeddings(texts)

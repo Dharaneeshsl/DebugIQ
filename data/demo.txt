@@ -1,0 +1,5 @@
+[12:00:00.100] ERROR CPU line 10 UVM_ERROR: instruction fetch timeout
+[12:00:01.200] FATAL MMU line 55 UVM_FATAL: page table walk failed
+[12:00:02.190] ERROR CACHE_CTRL line 730 UVM_ERROR: cache line dirty miss
+[12:00:03.100] ERROR CPU line 10 UVM_ERROR: instruction fetch timeout
+ASSERTION FAILED: axi_valid_stable at axi_intf.sv:142

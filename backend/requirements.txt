@@ -3,7 +3,6 @@ uvicorn
 pandas
 numpy
 scikit-learn
-sentence-transformers
 python-multipart
 pydantic
 datasketch
@@ -16,8 +15,7 @@ slowapi
 loguru
 prometheus-fastapi-instrumentator
 pika
-google-generativeai
 pymongo
 python-dotenv
 pytest
-torch
+httpx

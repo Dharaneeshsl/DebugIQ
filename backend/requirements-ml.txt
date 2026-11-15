@@ -1,0 +1,5 @@
+# Optional transformer embeddings, Siamese experiments, and Gemini integration.
+-r requirements.txt
+sentence-transformers
+torch
+google-generativeai

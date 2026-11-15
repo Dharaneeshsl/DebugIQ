@@ -1,254 +1,109 @@
-# DebugIQ - AI-Assisted Simulation Log Analysis
+# DebugIQ
 
-> DebugIQ turns raw verification and simulation logs into prioritized, explainable failure insights using parsing, deduplication, clustering, scoring, and dashboard-based triage.
+DebugIQ turns simulation and verification logs into failure records, deduplicated patterns, priority rankings, charts, and debugging guidance.
 
-## Pitch
+## Run locally without Docker
 
-DebugIQ is an end-to-end log intelligence platform for regression-style hardware or verification logs. It ingests noisy `.log`, `.txt`, and `.gz` files, extracts failures with context, groups semantically similar issues, ranks them by impact, and presents the results in a FastAPI + React workflow built for fast debugging.
+Tested on Windows with Python 3.14 and Node.js 24. The default installation needs no MongoDB, RabbitMQ, model download, or AI API key. Company release instructions are in [PRODUCTION.md](PRODUCTION.md).
 
-This project is best described as:
-- AI-assisted
-- explainable
-- production-oriented
-- demo-ready and submission-ready
+From the repository root in PowerShell:
 
-It should not be described as:
-- guaranteed 100% accurate
-- fully validated for all unseen logs
-- proven live-production infrastructure in every environment
-
-## What DebugIQ Does
-
-1. Parse failure lines and nearby context from raw logs.
-2. Normalize and preprocess messages for downstream analysis.
-3. Categorize failures into common debugging buckets.
-4. Generate embeddings for semantic comparison.
-5. Deduplicate repeated or highly similar failures.
-6. Cluster related failures for dashboard visualization.
-7. Score failures by severity, recurrence, module impact, and history.
-8. Surface root-cause suggestions and explainability signals.
-9. Present results through an interactive dashboard and report export flow.
-
-## Core Pipeline
-
-The pipeline looks like this:
-
-`Raw logs -> Parsing -> Preprocessing -> Categorization -> Embeddings -> Deduplication -> Clustering -> Priority scoring -> Explainability -> Dashboard`
-
-Main pipeline stages:
-- Parsing: regex-based failure extraction with context windows
-- Categorization: rule-based and embedding-assisted labeling
-- Deduplication: hybrid similarity flow with LSH and semantic matching
-- Clustering: grouping similar failures for triage and graph views
-- Priority scoring: weighted ranking using severity, frequency, module, and history
-- Explainability: root-cause hints, context retrieval, and SHAP-style feature importance
-
-## Tech Stack
-
-### Backend
-- Python
-- FastAPI
-- PyMongo / MongoDB
-- Scikit-learn
-- NetworkX
-- PyTorch scaffolding for Siamese-style similarity experiments
-- SlowAPI rate limiting
-- JWT authentication
-
-### Frontend
-- React 18
-- Vite
-- Tailwind CSS
-- Axios
-- Recharts
-- react-force-graph-2d
-
-### Infrastructure
-- Docker
-- Docker Compose
-- Nginx
-- RabbitMQ for async ingestion
-- MongoDB container for local stack runs
-
-## Project Structure
-
-- `backend/main.py`: FastAPI app and API routes
-- `backend/services/pipeline.py`: main log-processing pipeline
-- `backend/mongo_store.py`: MongoDB access layer
-- `backend/ml/`: ML and analytics components
-- `frontend/src/components/Dashboard.jsx`: main analytics dashboard
-- `frontend/src/api/api.js`: frontend API client
-- `scripts/run_full_check.ps1`: backend tests + frontend production build
-- `scripts/smoke_test.ps1`: live API smoke test
-
-## Verified Status
-
-As checked on May 7, 2026:
-
-- Backend unit and integration tests pass
-- Frontend production build passes
-- The repository is packaged in a submission-ready way
-- Environment templates are present
-- Docker ignore files are present
-
-What is verified:
-- code builds
-- backend tests pass
-- frontend production bundle builds successfully
-
-What is not yet fully verified in this repository alone:
-- a successful live full-stack run in every environment
-- guaranteed accuracy on every possible log dataset
-- a valid claim of 100% ML correctness
-
-## Accuracy Claim
-
-DebugIQ uses ML-assisted heuristics and explainable ranking to improve debugging speed and triage quality. It is appropriate to claim:
-
-- high-value failure prioritization
-- explainable ML-assisted analysis
-- tested end-to-end pipeline behavior
-
-It is not appropriate to claim:
-
-- 100% accurate results
-- perfect detection on all unseen logs
-- guaranteed root-cause correctness
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.10+
-- Node.js 18+
-- MongoDB
-- RabbitMQ for async ingestion
-
-### Backend setup
-
-```bash
-cd backend
-pip install -r requirements.txt
-python -m uvicorn main:app --reload --port 8000
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start_local.ps1 -Install
 ```
 
-Set the required backend environment values in `backend/.env` before starting the API.
+On subsequent launches:
 
-### Frontend setup
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start_local.ps1
+```
 
-```bash
+Open [DebugIQ](http://localhost:5173). The initial local account is `admin` / `admin123`. Sign in, upload `data/demo.txt`, and inspect the dashboard. Ctrl+C in the launch terminal stops the app. [API documentation](http://localhost:8000/docs) is also available.
+
+The launcher installs dependencies into `.venv`, starts the API on `127.0.0.1:8000`, and starts the dashboard on `127.0.0.1:5173`. API logs are saved in `backend/local-api.log` and `backend/local-api-error.log`.
+
+To use separate terminals:
+
+```powershell
+# Terminal 1, repository root
+.\.venv\Scripts\python.exe -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000
+
+# Terminal 2
 cd frontend
-npm install
-npm run dev
+npm run dev -- --host 127.0.0.1
 ```
 
-Set `VITE_API_BASE_URL` in `frontend/.env` if the frontend should call a backend URL other than the local default.
+## Product flows
 
-### Docker
+- Sign in, create a user account, and revoke a session on sign-out.
+- Upload `.log`, `.txt`, and gzip-compressed logs with progress and useful errors.
+- Extract severity, module, simulation time, source location, and surrounding context.
+- Normalize changing timestamps and log positions before duplicate matching.
+- Cluster failures and prioritize by severity, recurrence, and module impact.
+- Inspect priority tables, categories, module hotspots, timelines, and graphs.
+- Track failures as open, investigating, closed, or wontfix.
+- Compare saved uploads for new, recurring, and resolved patterns.
+- Download authenticated CSV reports with status and history fields.
+- Delete individual uploads or clear your account's upload history.
+- Use evidence summaries and rule-based debugging suggestions without an AI key.
+- Configure an AI provider for generated explanations and conversational answers.
+- Submit background uploads with `/upload-async` and poll `/job-status/{job_id}`.
 
-```bash
-docker compose up --build
+Saved-upload selection, upload, export, and sign-out are accessible on small screens. Run and failure APIs enforce account ownership. Changing shared priority weights requires an administrator account.
+
+## Configuration and storage
+
+Copy values from `backend/.env.example` to `backend/.env` as needed. Real environment files, generated secrets, and databases are ignored by Git.
+
+| Setting | Default / purpose |
+| --- | --- |
+| `DEBUGIQ_STORAGE` | SQLite when no MongoDB URI is configured; explicitly set `sqlite` or `mongo` |
+| `DEBUGIQ_SQLITE_PATH` | `backend/data/debugiq.sqlite3` |
+| `DEBUGIQ_EMBEDDINGS_BACKEND` | `tfidf`, offline matching; use `transformer` for optional models |
+| `DEBUGIQ_ADMIN_USERNAME` | Initial admin username, `admin` |
+| `DEBUGIQ_ADMIN_PASSWORD` | Initial admin password, `admin123` |
+| `DEBUGIQ_JWT_SECRET` | Generated and persisted in `backend/data/jwt-secret` when omitted |
+| `DEBUGIQ_MAX_UPLOAD_BYTES` | 20 MiB, applied to compressed and expanded files |
+| `DEBUGIQ_MAX_FAILURES` | 3,000 extracted rows per upload; split larger logs |
+| `MONGO_URI` / `MONGODB_URI` | Optional MongoDB service for shared installations |
+| `MONGO_DB_NAME` | `debugiq` |
+| `RABBITMQ_URL` | Optional queue; omit for in-process local background jobs |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated additional frontend origins |
+| `OPENAI_API_KEY` | Optional generated AI answers |
+| `OPENAI_MODEL` | Optional provider model name |
+
+Groq-compatible (`CHATBOT_API_KEY` / `GROQ_KEY`) and Gemini (`GEMINI_API_KEY`) integrations are also available. Optional transformer, Siamese, and Gemini dependencies are in `backend/requirements-ml.txt`. The normal application uses `backend/requirements.txt`.
+
+`frontend/.env.example` documents the API URL. Both Vite dev and preview proxy `/api` to the local backend. For production hosting, configure an `/api` reverse proxy or set `VITE_API_BASE_URL` at build time.
+
+SQLite persists users, runs, statuses, jobs, settings, and revoked tokens across restarts. It is intended for a single-machine installation; its document adapter scans collections for filters. Use MongoDB for shared or larger deployments. Back up the database and JWT secret together. Initial admin environment values do not change an existing account.
+
+Without `RABBITMQ_URL`, background jobs run inside the API process. Keep the API running until jobs finish. For durable processing across restarts, run native RabbitMQ and start a worker:
+
+```powershell
+.\.venv\Scripts\python.exe backend/worker.py
 ```
 
-This starts:
-- `frontend` on `http://localhost:5173`
-- `backend` on `http://localhost:8000`
-- `mongo` on `localhost:27017`
-- `rabbitmq` on `localhost:5672`
-- RabbitMQ management UI on `http://localhost:15672`
+The worker and API must share database and queue configuration. If a configured queue cannot be reached, upload returns an error instead of silently leaving a job queued. Synchronous upload remains available.
 
-The Compose stack now includes:
-- health checks for MongoDB, RabbitMQ, backend, and frontend
-- startup ordering based on service health
-- persistent MongoDB storage through a named volume
-- local-container defaults for `MONGO_URI` and `RABBITMQ_URL`
-
-If you want to stop the stack:
-
-```bash
-docker compose down
-```
-
-If you want to stop it and also remove the MongoDB volume:
-
-```bash
-docker compose down -v
-```
-
-### Render backend deployment
-
-For a Render Web Service, set the backend Dockerfile path to `backend/Dockerfile`.
-The container command reads Render's `PORT` automatically.
-
-Required environment variables:
-- `MONGO_URI` or `MONGODB_URI`: a reachable MongoDB connection string, such as MongoDB Atlas or a Render private service URL. Do not use `localhost:27017` on Render, because localhost points to the web container itself.
-- `MONGO_DB_NAME`: database name, usually `debugiq`.
-- `DEBUGIQ_JWT_SECRET`: a long random secret.
-- `DEBUGIQ_ADMIN_USERNAME` and `DEBUGIQ_ADMIN_PASSWORD`: initial admin account values.
-
-Optional:
-- `RABBITMQ_URL`: needed only for `/upload-async`; synchronous `/upload` works without RabbitMQ.
-- `CORS_ALLOWED_ORIGINS`: comma-separated deployed frontend origins.
-
-## Local Verification
-
-### Offline/full check
+## Verify
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_full_check.ps1
 ```
 
-This runs:
-- backend pytest suite
-- frontend production build
-
-### Live smoke test
-
-With the backend and database running:
+This runs backend unit and API integration tests and builds the frontend. If the API is running, it also performs a live smoke test. To run only the live test:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/smoke_test.ps1
 ```
 
-## Demo Flow
+API tests use an isolated temporary SQLite database and exercise account isolation, upload validation, async processing, dashboard, status changes, explanations, chat, comparisons, CSV, deletion, token revocation, and concurrent ID allocation.
 
-1. Open the app and sign in.
-2. Upload a simulation log.
-3. Review totals, health score, and unique failure counts.
-4. Inspect clustered issues and priority rankings.
-5. Open a failure to review context, recommendations, and explainability output.
-6. Export CSV or compare recent uploads for triage.
+## Interpretation and deployment limits
 
-## Suggested Submission Wording
+**Failure Repetition** is the percentage of duplicate failure rows. The API retains its historical `health_score` field name for this metric. It does not measure design correctness or pass rate. Module efficiency is relative failure share, not measured hardware performance. Graph links and root-cause suggestions are heuristics requiring engineering validation.
 
-Use wording like this in your submission:
+Local rule-based assistance labels its source. Generated AI answers require a working provider and are not guaranteed correct. Ingestion and the dashboard work without a provider.
 
-> DebugIQ is an end-to-end AI-assisted verification log analysis platform that parses raw simulation logs, deduplicates repeated failures, clusters related issues, prioritizes them with explainable scoring, and presents the results in an interactive dashboard for faster debugging.
-
-Short version:
-
-> End-to-end AI-assisted log triage with explainable failure prioritization.
-
-Avoid wording like:
-
-- "100% accurate"
-- "guaranteed correct"
-- "perfect ML detection"
-- "fully proven production deployment in every environment"
-
-## Current Limitations
-
-- Live deployment still depends on a working MongoDB connection and runtime environment
-- Async ingestion requires RabbitMQ
-- Large logs may need pagination and more tuning for UI responsiveness
-- LLM-backed explanation quality depends on external provider availability and API keys
-
-## Security Note
-
-- Do not commit real API keys, passwords, or database credentials
-- Rotate any secrets that were previously exposed during development
-- Keep real environment files local and out of commits
-
-## Final Verdict
-
-DebugIQ is in a strong state for hackathon submission and demo use. The codebase is buildable, test-backed, and structured like a production-oriented prototype. The correct claim is that it is submission-ready and demo-ready, not that it delivers guaranteed 100% accurate ML outcomes.
+Before public deployment, configure strong administrator credentials, an explicit JWT secret, HTTPS, allowed origins, database backups, and operational monitoring. Uploaded log excerpts are sent to an AI provider when one is configured; review your data-handling requirements first. MongoDB, RabbitMQ, external AI services, and public hosting need separate validation in their target environment.

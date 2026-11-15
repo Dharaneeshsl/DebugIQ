@@ -13,7 +13,7 @@ class RootCauseAnalyzer:
         self.graph.clear()
         
         # Sort failures by timestamp
-        sorted_failures = sorted(failures, key=lambda x: x.get("timestamp", ""))
+        sorted_failures = sorted(failures, key=lambda x: str(x.get("timestamp") or ""))
         
         for i, f in enumerate(sorted_failures):
             fid = f["id"]

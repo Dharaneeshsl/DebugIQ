@@ -19,6 +19,10 @@ client.interceptors.request.use((config) => {
 client.interceptors.response.use(
   (response) => response,
   (error) => {
+    const detail = error?.response?.data?.detail;
+    if (Array.isArray(detail)) {
+      error.response.data.detail = detail.map(item => `${item.loc?.slice(1).join(".") || "Input"}: ${item.msg}`).join("; ");
+    }
     if (error?.response?.status === 401) {
       localStorage.removeItem("debugiq_token");
       window.location.href = "/login";
@@ -84,8 +88,19 @@ export const signup = async (username, password, role) => {
 
 export const getAdminExists = () => client.get(`/auth/admin-exists`);
 
-export const exportCSV = (runId) => {
-  window.open(`${BASE}/report/${runId}?format=csv`, "_blank");
+export const compareRuns = (runA, runB) => client.get("/compare-runs", { params: { run_a: runA, run_b: runB } });
+export const deleteRun = (runId) => client.delete(`/run/${runId}`);
+
+export const exportCSV = async (runId) => {
+  const response = await client.get(`/report/${runId}`, { params: { format: "csv" }, responseType: "blob" });
+  const url = URL.createObjectURL(response.data);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `debugiq-run-${runId}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
 export default client;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Dict
 import hashlib
+import os
 
 from parser import parse_logs
 from preprocessor import preprocess_records
@@ -15,6 +16,7 @@ from mongo_store import (
     add_failures,
     get_history_counts,
     get_weights,
+    delete_run,
 )
 
 
@@ -26,6 +28,9 @@ def process_log_text(text: str, filename: str, *, user_id: int | None = None) ->
     parsed = parse_logs(text)
     if not parsed:
         raise ValueError("No valid log lines found")
+    maximum = int(os.environ.get("DEBUGIQ_MAX_FAILURES", "3000"))
+    if len(parsed) > maximum:
+        raise ValueError(f"Log contains {len(parsed)} failure rows; limit is {maximum}. Split it into smaller logs.")
 
     messages = [p["message"] for p in parsed]
     preprocessed = preprocess_records(messages)
@@ -79,7 +84,11 @@ def process_log_text(text: str, filename: str, *, user_id: int | None = None) ->
 
     run = create_run(filename, total, unique, critical, health, user_id=user_id)
     run_id = run["_id"]
-    add_failures(run_id, failures, user_id=user_id, run_uploaded_at=run["uploaded_at"])
+    try:
+        add_failures(run_id, failures, user_id=user_id, run_uploaded_at=run["uploaded_at"])
+    except Exception:
+        delete_run(run_id, user_id=user_id)
+        raise
 
     return {
         "run_id": run_id,

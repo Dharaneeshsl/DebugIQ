@@ -2,7 +2,7 @@ param(
   [string]$BaseUrl = "http://localhost:8000",
   [string]$Username = "admin",
   [string]$Password = "admin123",
-  [string]$LogPath = "$PSScriptRoot\..\backend\sample_logs\test.log",
+  [string]$LogPath = "$PSScriptRoot\..\data\demo.txt",
   [switch]$SkipExplain
 )
 
@@ -56,7 +56,7 @@ Write-Host ("first_failure_id=" + $first.id)
 if ($SkipExplain) {
   Write-Host "5) Explain... skipped (-SkipExplain)"
 } else {
-  Write-Host "5) Explain (requires CHATBOT_API_KEY / GROQ_KEY / OPENAI_API_KEY)..."
+  Write-Host "5) Explanation (provider or local rules)..."
   try {
     $exp = Invoke-RestMethod -Method Get -Uri "$BaseUrl/explain/$runId/$($first.id)" -Headers $headers
     $preview = $exp.llm_explanation
@@ -65,21 +65,26 @@ if ($SkipExplain) {
     $preview = ($preview -replace "`r`n", " ") -replace "`n", " "
     Write-Host ("Explanation received. preview=" + $preview)
   } catch {
-    Write-Host ("   WARN: Explain failed (pipeline still OK): " + $_.Exception.Message)
+    throw ("Explanation failed: " + $_.Exception.Message)
   }
 }
 
-Write-Host "6) Chat run (optional LLM)..."
+Write-Host "6) Run assistant..."
 try {
   $chatBody = @{ message = "list failure modules"; history = @() } | ConvertTo-Json -Depth 5
   $chat = Invoke-RestMethod -Method Post -Uri "$BaseUrl/chat/run/$runId" -Headers ($headers + @{ "Content-Type" = "application/json" }) -Body $chatBody
+  if (!$chat.reply) { throw "Chat reply missing" }
   if ($chat.reply) {
     $p = $chat.reply.Substring(0, [Math]::Min(80, $chat.reply.Length))
     Write-Host ("   Chat reply preview: " + $p)
   }
 } catch {
-  Write-Host ("   WARN: Chat failed: " + $_.Exception.Message)
+  throw ("Chat failed: " + $_.Exception.Message)
 }
+
+Write-Host "7) CSV report..."
+$report = Invoke-WebRequest -Uri "$BaseUrl/report/$runId" -Headers $headers -UseBasicParsing
+if ($report.StatusCode -ne 200 -or !$report.Headers['Content-Disposition']) { throw "CSV download failed" }
 
 Write-Host "OK: DebugIQ pipeline + dashboard API checks passed."
 
