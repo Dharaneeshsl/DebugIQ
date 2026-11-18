@@ -1,33 +1,30 @@
 # Release verification — November 18, 2026
 
-Prepared a self-hosted Windows release without Docker. This revision adds direct
-dashboard links, employee offboarding and password resets, and archive verification.
+DebugIQ's supported Windows installation is ready for self-hosted delivery
+without Docker. The ZIP includes the built dashboard, backend, pinned dependencies,
+operator tools, installation guide, and a file checksum manifest.
 
-- The previous revision passed 22 backend tests, including production configuration, private AI defaults,
-  restricted registration, account isolation, token revocation, and backup/restore.
-- Frontend built successfully with the patched Vite 8 and React Router 7 toolchain.
-- The audit of shipped frontend dependencies reported zero known vulnerabilities.
-  The November 18 full audit flagged a build-only `picomatch` advisory
-  ([GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf)).
-  npm reported no patched published version. Install from the prebuilt ZIP to
-  deploy without running frontend build tools.
-- pip-audit of the 64-package pinned backend snapshot reported no known vulnerabilities.
-- The previous revision passed live production acceptance on loopback port 8001, including
-  readiness, disabled public signup/docs, authentication, upload, dashboard,
-  CSV report, cleanup, and logout revocation.
-- For this revision, the pinned Python dependencies installed in a clean environment.
-  Windows application control on the development machine blocked native scikit-learn
-  modules during the full test run. The Windows GitHub Actions workflow runs the
-  test suite and verifies the extracted archive before and after a database restore.
+- GitHub Actions installed the pinned Python 3.14 dependencies on a clean
+  Windows runner. All 24 backend tests passed, including account lifecycle
+  and session revocation, private AI defaults, and background log cleanup.
+- The frontend built from its lockfile. The shipped npm dependency audit and
+  the pinned Python dependency audit found no known vulnerabilities.
+- The Windows runner verified the archive, started the extracted production
+  app, and passed live acceptance before and after a database restore. The
+  checks included dashboard assets, saved run links, login, upload, CSV,
+  disabled public registration, and logout.
+- The handoff archive excludes credentials, local databases, and installed dependencies.
 
-Production defaults keep external AI disabled and use a separate company database
-with generated bootstrap credentials. Secrets and company databases are excluded
-from the distributable archive. The release keeps only parsed failure excerpts
-after processing new uploads. See PRODUCTION.md for installation and operations.
+See the [Windows acceptance run](https://github.com/Dharaneeshsl/DebugIQ/actions/runs/44329536373)
+and [PRODUCTION.md](PRODUCTION.md) for the installation and operations guide.
 
-This is a tested release candidate for company evaluation, not evidence of an
-approved company deployment. Remaining target-environment gates: HTTPS/DNS and
-service supervision, engineer acceptance on proprietary simulator logs, agreed
-load/capacity tests, off-host disaster recovery, and company security/privacy review.
-No external AI, native MongoDB/RabbitMQ failover, SSO, or enterprise project-sharing
-acceptance is claimed. The company and expected workload have not been specified.
+The full frontend audit flagged a build-tool dependency advisory in `picomatch`.
+No patched version was published when checked. Deploy from the prebuilt ZIP to
+avoid using the frontend build tools on the production host.
+[Build-tool advisory](https://github.com/advisories/GHSA-fc5q-39xc-vjpf)
+
+The target company still needs to verify HTTPS and network access, acceptance on
+its simulator logs, performance at its workload, and recovery against its own
+retention and recovery targets. The tested profile is a single Windows host with
+SQLite and external AI disabled. The live acceptance run did not exercise native
+MongoDB, RabbitMQ failover, or external AI services.
