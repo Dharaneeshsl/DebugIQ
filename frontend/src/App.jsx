@@ -1,5 +1,5 @@
 import { Suspense, lazy } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 
 const LogUpload = lazy(() => import("./components/LogUpload"));
 const Dashboard = lazy(() => import("./components/Dashboard"));
@@ -7,9 +7,10 @@ const Login = lazy(() => import("./components/Login"));
 const Signup = lazy(() => import("./components/Signup"));
 
 const RequireAuth = ({ children }) => {
+  const location = useLocation();
   const token = localStorage.getItem("debugiq_token");
   if (!token) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
   return children;
 };

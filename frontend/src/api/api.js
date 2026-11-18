@@ -8,6 +8,8 @@ const client = axios.create({
   baseURL: BASE,
 });
 
+export const getPublicConfig = () => client.get("/public-config");
+
 client.interceptors.request.use((config) => {
   const token = localStorage.getItem("debugiq_token");
   if (token) {

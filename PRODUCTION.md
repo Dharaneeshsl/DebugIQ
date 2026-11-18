@@ -8,8 +8,8 @@ unknown company workload. No Docker is needed.
 
 1. Use the tested Windows runtime: Python 3.14 and Node.js 24. Revalidate other platforms.
 2. Create `.venv` and install `backend/requirements-release.txt` into it.
-3. In `frontend`, run `npm ci` and `npm run build`. Do not set a frontend API URL;
-   the release uses `/api` on the same origin.
+3. The release ZIP includes the built dashboard. For a source checkout, run
+   `npm ci` and `npm run build` in `frontend`. The dashboard uses `/api` on the same origin.
 4. Run `.venv/Scripts/python.exe backend/provision_production.py` once.
 5. Restrict `backend/.env.production` to the service account and operators. Read
    the generated initial username/password privately. Never commit this file.
@@ -18,8 +18,15 @@ unknown company workload. No Docker is needed.
 The launcher binds only to loopback on port 8000. The same server serves the built
 dashboard and the API. Use the company's managed HTTPS reverse proxy for employee
 access. TLS termination, host DNS, certificate renewal, network restrictions, and
-service supervision are deployment requirements; they are not provisioned by this
-repository. Keep one API worker with the default in-memory rate limiter.
+service supervision belong to the target environment. Keep one API worker with
+the default in-memory rate limiter. Set a request body limit on the proxy that
+allows the configured upload size plus multipart overhead. For the default
+10 MiB production limit, 11 MiB accommodates the upload form.
+
+Use `-Port` to select a different loopback port. If a local reverse proxy
+overwrites forwarded headers with verified client values, pass
+`-ForwardedAllowIps 127.0.0.1` so rate limits are applied per employee IP.
+Leave forwarded headers disabled if the proxy's header handling is unknown.
 
 Production mode rejects weak bootstrap credentials and a short signing secret,
 disables public signup and API schema pages, adds security headers and request
@@ -33,9 +40,10 @@ Create employee accounts from a restricted operator terminal:
 .venv/Scripts/python.exe backend/manage_users.py --env backend/.env.production --username engineer-name
 ```
 
-The password is entered twice without echo. This initial release does not include
-SSO, a password-reset email service, project sharing, or enterprise account lifecycle
-management. Companies requiring these must treat them as additional scope.
+The password is entered twice without echo. Pass `reset-password`, `disable`, or
+`enable` before `--env` to manage an existing account. These operations expire
+old sessions. Disabling an employee leaves their saved runs in place and blocks
+their access. Resetting a password keeps the current enabled or disabled state.
 
 ## Privacy
 
@@ -45,6 +53,9 @@ code. Keep it false unless the company explicitly approves disclosure of log
 excerpts to that provider. Rule-based guidance continues to work privately.
 Set file permissions and volume encryption for databases and backups. Logs can
 contain proprietary chip designs and testbench details.
+New background jobs discard the full uploaded text when they complete or fail.
+Saved analyses retain their failure excerpts. Older database copies and backups
+remain subject to the company's retention policy.
 
 ## Monitoring and queues
 
@@ -86,7 +97,19 @@ when MongoDB is selected; this utility is only for SQLite.
 ## Release gate
 
 Run the backend test suite, frontend production build, and dependency audits.
-Then run this against a dedicated test installation configured for production:
+Package and verify the release from the repository root using the Windows release environment:
+
+```powershell
+$archive = powershell -ExecutionPolicy Bypass -File scripts/package_release.ps1
+.venv/Scripts/python.exe scripts/verify_release.py $archive
+```
+
+This checks the archive checksum and its file manifest, extracts the package into
+a temporary directory, provisions an isolated test instance, and runs the acceptance
+check before and after restoring a database backup. Use archives from your own build
+or a trusted release channel because this command launches the extracted application.
+
+To validate a dedicated test installation directly:
 
 ```powershell
 .venv/Scripts/python.exe backend/release_check.py --env backend/.env.production --url http://127.0.0.1:8000

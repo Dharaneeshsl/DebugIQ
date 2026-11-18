@@ -1,5 +1,6 @@
 """SQLite online backup and non-overwriting offline restore for local installations."""
 import argparse
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 
@@ -9,11 +10,17 @@ def backup(source, destination):
     if not source.is_file() or destination.exists() or source == destination:
         raise ValueError("Source must exist and backup destination must be new")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as reader:
-        with sqlite3.connect(destination) as writer:
-            reader.backup(writer)
-            if writer.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                raise RuntimeError("Backup integrity check failed")
+    # Reserve the filename before opening SQLite so simultaneous backups cannot overwrite it.
+    destination.touch(exist_ok=False)
+    try:
+        with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as reader:
+            with closing(sqlite3.connect(destination)) as writer:
+                reader.backup(writer)
+                if writer.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise RuntimeError("Backup integrity check failed")
+    except Exception:
+        destination.unlink()
+        raise
 
 
 if __name__ == "__main__":

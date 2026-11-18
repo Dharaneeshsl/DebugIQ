@@ -1,5 +1,6 @@
 """Generate an isolated company's installation configuration, without logging secrets."""
 import secrets
+import json
 from pathlib import Path
 
 
@@ -8,7 +9,7 @@ if __name__ == "__main__":
     with destination.open("x", encoding="utf-8") as output:
         output.write("\n".join([
             "DEBUGIQ_ENV=production", "DEBUGIQ_STORAGE=sqlite",
-            "DEBUGIQ_SQLITE_PATH=" + (Path(__file__).parent / "data/company.sqlite3").as_posix(),
+            "DEBUGIQ_SQLITE_PATH=" + json.dumps((Path(__file__).resolve().parent / "data/company.sqlite3").as_posix(), ensure_ascii=False),
             "DEBUGIQ_EMBEDDINGS_BACKEND=tfidf", "DEBUGIQ_ADMIN_USERNAME=company-admin",
             "DEBUGIQ_ADMIN_PASSWORD=" + secrets.token_urlsafe(24),
             "DEBUGIQ_JWT_SECRET=" + secrets.token_urlsafe(48),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Dict, List, Optional
 from datetime import datetime
+from uuid import uuid4
 
 from pymongo import MongoClient, ASCENDING, ReturnDocument
 from dotenv import load_dotenv
@@ -92,6 +93,21 @@ def get_user_by_username(username: str) -> Optional[Dict]:
 
 def admin_exists() -> bool:
     return _db()["users"].find_one({"role": "admin"}) is not None
+
+
+def admin_accounts() -> List[Dict]:
+    return list(_db()["users"].find({"role": "admin"}))
+
+
+def change_user_access(username: str, *, password_hash=None, disabled=None) -> bool:
+    update = {"session_version": uuid4().hex}
+    query = {"username": username}
+    if password_hash is not None:
+        update["password_hash"] = password_hash
+    if disabled is not None:
+        query["role"] = "user"
+        update["disabled"] = disabled
+    return _db()["users"].find_one_and_update(query, {"$set": update}) is not None
 
 
 # Runs + Failures
@@ -349,9 +365,9 @@ def set_upload_job_status(
     error: Optional[str] = None,
     run_id: Optional[int] = None,
 ) -> None:
-    update: Dict = {"status": status}
-    if error is not None:
-        update["error"] = error
+    update: Dict = {"status": status, "error": error}
+    if status in {"completed", "failed"}:
+        update["raw_logs_text"] = None
     if run_id is not None:
         update["run_id"] = run_id
     _db()["upload_jobs"].update_one({"_id": job_id}, {"$set": update})

@@ -1,5 +1,6 @@
 """Live acceptance checks against an isolated production installation."""
 import argparse
+import re
 import httpx
 from dotenv import dotenv_values
 
@@ -12,9 +13,14 @@ if __name__ == "__main__":
     configuration = dotenv_values(args.env)
     with httpx.Client(base_url=args.url, timeout=60, trust_env=False) as client:
         assert client.get("/api/ready").status_code == 200
-        assert client.get("/dashboard").status_code == 200
+        ui = client.get("/dashboard")
+        ui.raise_for_status()
+        bundle = re.search(r'<script[^>]*src="(/assets/[^"\s]+\.js)"', ui.text)
+        assert bundle, "Dashboard did not reference a built JavaScript bundle"
+        assert client.get(bundle[1]).status_code == 200
         assert client.get("/docs").status_code == 404
         assert client.get("/api/runs").status_code == 401
+        assert client.get("/api/public-config").json() == {"signup_enabled": False}
         assert client.post("/api/signup", json={"username": "blocked", "password": "12345678"}).status_code == 403
         token = client.post("/api/token", data={"username": configuration["DEBUGIQ_ADMIN_USERNAME"], "password": configuration["DEBUGIQ_ADMIN_PASSWORD"]})
         token.raise_for_status()
@@ -24,6 +30,8 @@ if __name__ == "__main__":
         upload.raise_for_status()
         run_id = upload.json()["run_id"]
         try:
+            html = client.get(f"/dashboard/{run_id}", headers={"Accept": "text/html", "Authorization": ""})
+            assert html.status_code == 200 and "text/html" in html.headers["Content-Type"]
             dashboard = client.get(f"/api/dashboard/{run_id}")
             dashboard.raise_for_status()
             assert dashboard.json()["total_failures"] == 1

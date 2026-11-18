@@ -55,3 +55,51 @@ def test_production_api_controls(tmp_path, monkeypatch):
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert response.headers["X-Request-ID"]
         assert client.post("/api/signup", json={"username": "intruder", "password": "12345678"}).status_code == 403
+        assert client.get("/api/public-config").json() == {"signup_enabled": False}
+
+
+def test_account_changes_revoke_existing_sessions(tmp_path, monkeypatch):
+    from auth_utils import hash_password
+    from fastapi.testclient import TestClient
+    from main import app
+    from mongo_store import change_user_access, create_user
+
+    monkeypatch.setenv("DEBUGIQ_STORAGE", "sqlite")
+    monkeypatch.setenv("DEBUGIQ_SQLITE_PATH", str(tmp_path / "company.db"))
+    initial = {"username": "engineer", "password": "initial-password-123"}
+    with TestClient(app) as client:
+        create_user(initial["username"], hash_password(initial["password"]), "user")
+
+        def authentication(credentials):
+            response = client.post("/token", data=credentials)
+            assert response.status_code == 200
+            return {"Authorization": "Bearer " + response.json()["access_token"]}
+
+        session = authentication(initial)
+        assert client.get("/runs", headers=session).status_code == 200
+        assert change_user_access(initial["username"], disabled=True)
+        assert client.get("/runs", headers=session).status_code == 401
+        assert client.post("/token", data=initial).status_code == 400
+        assert change_user_access(initial["username"], disabled=False)
+        assert client.get("/runs", headers=session).status_code == 401
+        session = authentication(initial)
+        replacement = {**initial, "password": "replacement-password-123"}
+        assert change_user_access(initial["username"], password_hash=hash_password(replacement["password"]))
+        assert client.get("/runs", headers=session).status_code == 401
+        assert client.post("/token", data=initial).status_code == 400
+        assert client.get("/runs", headers=authentication(replacement)).status_code == 200
+
+
+def test_terminal_uploads_discard_raw_log(tmp_path, monkeypatch):
+    from mongo_store import create_upload_job, get_upload_job, set_upload_job_status
+
+    monkeypatch.setenv("DEBUGIQ_STORAGE", "sqlite")
+    monkeypatch.setenv("DEBUGIQ_SQLITE_PATH", str(tmp_path / "company.db"))
+    for status in ("completed", "failed"):
+        job = create_upload_job("private.log", "confidential sample")
+        set_upload_job_status(job["_id"], "queued", error="previous error")
+        assert get_upload_job(job["_id"])["raw_logs_text"] == "confidential sample"
+        set_upload_job_status(job["_id"], status)
+        result = get_upload_job(job["_id"])
+        assert result["raw_logs_text"] is None
+        assert result["error"] is None

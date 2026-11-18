@@ -33,7 +33,7 @@ def _consume_forever() -> None:
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 
-        if job["status"] == "completed":
+        if job["status"] in {"completed", "failed"}:
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 

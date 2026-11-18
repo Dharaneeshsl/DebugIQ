@@ -1,13 +1,23 @@
-import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
-import { login } from "../api/api";
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate, Link } from "react-router-dom";
+import { getPublicConfig, login } from "../api/api";
 
 const Login = () => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [signupEnabled, setSignupEnabled] = useState(null);
   const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    let active = true;
+    getPublicConfig().then(({ data }) => {
+      if (active) setSignupEnabled(data.signup_enabled === true);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
 
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -15,7 +25,8 @@ const Login = () => {
     setLoading(true);
     try {
       await login(username, password);
-      navigate("/dashboard");
+      const destination = location.state?.from;
+      navigate(/^\/(?:dashboard(?:\/\d+)?|upload)$/.test(destination) ? destination : "/dashboard", { replace: true });
     } catch (err) {
       setError(err?.response?.data?.detail || "Login failed");
     } finally {
@@ -65,12 +76,13 @@ const Login = () => {
           {error && <div className="text-red-400 text-sm">{error}</div>}
         </form>
 
-        <div className="mt-4 text-sm text-slate-400">
+        {signupEnabled === true && <div className="mt-4 text-sm text-slate-400">
           New here?{" "}
           <Link className="text-emerald-400 hover:text-emerald-300" to="/signup">
             Create an account
           </Link>
-        </div>
+        </div>}
+        {signupEnabled === false && <p className="mt-4 text-sm text-slate-400">Contact your administrator for an account.</p>}
       </div>
     </div>
   );

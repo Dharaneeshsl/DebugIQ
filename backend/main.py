@@ -67,6 +67,7 @@ from mongo_store import (
     get_user_by_username,
     create_user,
     admin_exists,
+    admin_accounts,
     get_weights,
     set_weights,
     revoke_token,
@@ -104,8 +105,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("Build the frontend before starting the production server")
     init_mongo()
     if production():
-        existing_admin = get_user_by_username(ADMIN_USERNAME)
-        if existing_admin and verify_password("admin123", existing_admin["password_hash"]):
+        if any(verify_password("admin123", admin["password_hash"]) for admin in admin_accounts()):
             raise RuntimeError("The existing demo administrator must not be used in production; provision a separate production database")
     if not os.environ.get("RABBITMQ_URL"):
         fail_interrupted_local_jobs()
@@ -149,9 +149,16 @@ if not production():
 
 @app.middleware("http")
 async def request_observability(request: Request, call_next):
-    if production() and request.scope["path"].startswith("/api/"):
-        request.scope["path"] = request.scope["path"][4:]
-        request.scope["raw_path"] = request.scope["path"].encode("utf-8")
+    path = request.scope["path"]
+    if production() and path.startswith("/api/"):
+        path = path[4:]
+    elif (request.method == "GET" and "text/html" in request.headers.get("accept", "")
+          and re.fullmatch(r"/dashboard/[0-9]+/?", path)):
+        # Browser reloads return the app shell, while /api/dashboard/<id> stays JSON.
+        path = "/dashboard"
+    if path != request.scope["path"]:
+        request.scope["path"] = path
+        request.scope["raw_path"] = path.encode("utf-8")
     request_id = str(uuid.uuid4())
     started = time.monotonic()
     response = await call_next(request)
@@ -175,6 +182,11 @@ class SignupRequest(BaseModel):
     username: str = Field(min_length=3, max_length=100, pattern=r"^\S+$")
     password: str = Field(min_length=8, max_length=256)
     role: str = "user"
+
+
+@app.get("/public-config")
+def public_config():
+    return {"signup_enabled": not production()}
 
 @app.get("/auth/admin-exists")
 def auth_admin_exists():
@@ -206,10 +218,12 @@ def signup(request: Request, payload: SignupRequest):
 @limiter.limit("10/minute")
 def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     user = get_user_by_username(form_data.username)
-    if not user or not verify_password(form_data.password, user["password_hash"]):
+    if not user or user.get("disabled") or not verify_password(form_data.password, user["password_hash"]):
         raise HTTPException(status_code=400, detail="Incorrect credentials")
 
-    token = create_access_token({"sub": user["username"], "role": user["role"]})
+    token = create_access_token({
+        "sub": user["username"], "role": user["role"], "version": user.get("session_version"),
+    })
     return {"access_token": token, "token_type": "bearer", "role": user["role"]}
 
 @app.post("/logout")
@@ -233,7 +247,7 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         if jti and is_token_revoked(jti):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
         user = get_user_by_username(username) if username else None
-        if not user:
+        if not user or user.get("disabled") or payload.get("version") != user.get("session_version"):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
         return {"username": username, "role": user["role"], "user_id": user["_id"]}
     except jwt.PyJWTError:
@@ -822,7 +836,7 @@ def upload_log_async(
 
 def _process_local_job(job_id: int):
     job = get_upload_job(job_id)
-    if not job or job["status"] == "completed":
+    if not job or job["status"] in {"completed", "failed"}:
         return
     set_upload_job_status(job_id, "processing")
     try:
@@ -1335,8 +1349,7 @@ if (_ui_root / "assets").is_dir():
 @app.get("/signup", include_in_schema=False)
 @app.get("/upload", include_in_schema=False)
 @app.get("/dashboard", include_in_schema=False)
-@app.get("/dashboard/{ui_run_id}", include_in_schema=False)
-def dashboard_page(ui_run_id: str = ""):
+def dashboard_page():
     if not (_ui_root / "index.html").is_file():
         raise HTTPException(status_code=404, detail="Dashboard build is not installed")
     return FileResponse(_ui_root / "index.html")
